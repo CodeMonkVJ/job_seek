@@ -131,9 +131,14 @@ const renderJobs = (jobs = []) => {
             </div>
             <div class="tab-panel" data-tab="resume">
               <div class="job-section">
-                <label>Resume (.tex)</label>
-                <textarea class="resume" rows="5">${job.resume_tex || ""}</textarea>
-                <button class="save-resume">Save resume</button>
+                <label>Overleaf project link</label>
+                <input type="url" class="overleaf-link" value="${job.overleaf_link || ""}" placeholder="https://www.overleaf.com/project/..." />
+                <button class="save-overleaf">Save link</button>
+                ${
+                  job.overleaf_link
+                    ? `<a class="overleaf-link-display" href="${job.overleaf_link}" target="_blank" rel="noopener">Open Overleaf project</a>`
+                    : ""
+                }
               </div>
             </div>
             <div class="tab-panel" data-tab="linkedin">
@@ -299,11 +304,11 @@ jobsContainer?.addEventListener("click", async (event) => {
     await loadJobs();
   }
 
-  if (event.target.classList.contains("save-resume")) {
-    const resume_tex = card.querySelector(".resume")?.value;
-    await api(`/api/jobs/${jobId}/resume`, {
-      method: "POST",
-      body: JSON.stringify({ resume_tex }),
+  if (event.target.classList.contains("save-overleaf")) {
+    const overleaf_link = card.querySelector(".overleaf-link")?.value;
+    await api(`/api/jobs/${jobId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ overleaf_link }),
     });
     await loadJobs();
   }

@@ -345,6 +345,18 @@ button.ghost:hover {
   margin-top: 8px;
 }
 
+.overleaf-link-display {
+  display: inline-flex;
+  margin-top: 10px;
+  color: var(--accent-dark);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.overleaf-link-display:hover {
+  text-decoration: underline;
+}
+
 .tag-area {
   margin: 10px 0 16px;
 }

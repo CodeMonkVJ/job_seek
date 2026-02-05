@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import urllib.request
 import re
 import sqlite3
 from datetime import datetime
@@ -13,9 +14,11 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 USERS_DIR = DATA_DIR / "users"
 GLOBAL_DB = DATA_DIR / "users.db"
+TEXLIVE_CACHE_DIR = DATA_DIR / "texlive" / "pdftex"
 
 ALLOWED_STATUSES = {"APPLIED", "INTERESTED", "ONGOING", "ACCEPTED", "REJECTED"}
 ALLOWED_CONNECTION_STATUSES = {"REFERRED", "MESSAGED", "PENDING"}
+TEXLIVE_BASE = "https://texlive.swiftlatex.com/pdftex/"
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 app = Flask(__name__)
@@ -59,6 +62,7 @@ def init_user_db(db_path: Path) -> None:
                 location TEXT,
                 keypoints TEXT,
                 resume_tex TEXT,
+                overleaf_link TEXT,
                 created_at TEXT NOT NULL
             );
             """
@@ -76,6 +80,7 @@ def init_user_db(db_path: Path) -> None:
             """
         )
         _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_jobs_column(conn, "overleaf_link", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
 
 
@@ -99,6 +104,7 @@ def ensure_user_db_schema(db_path: Path) -> None:
         return
     with _connect(db_path) as conn:
         _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_jobs_column(conn, "overleaf_link", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
 
 
@@ -121,6 +127,26 @@ def index():
 @app.route("/static/<path:filename>")
 def static_files(filename: str):
     return send_from_directory("static", filename)
+
+
+@app.route("/texlive/pdftex/<path:filename>")
+def texlive_proxy(filename: str):
+    if ".." in filename or filename.startswith("/"):
+        return jsonify({"error": "invalid_filename"}), 400
+    TEXLIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    local_path = TEXLIVE_CACHE_DIR / filename
+    if local_path.exists():
+        return send_from_directory(local_path.parent, local_path.name)
+    url = f"{TEXLIVE_BASE}{filename}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = resp.read()
+            content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return app.response_class(data, content_type=content_type)
+    except Exception:
+        return jsonify({"error": "fetch_failed"}), 502
 
 
 @app.route("/api/register", methods=["POST"])
@@ -203,6 +229,7 @@ def jobs():
         yoe = (payload.get("yoe") or "").strip()
         location = (payload.get("location") or "").strip()
         keypoints = (payload.get("keypoints") or "").strip()
+        overleaf_link = (payload.get("overleaf_link") or "").strip()
 
         if not link:
             return jsonify({"error": "link_required"}), 400
@@ -212,8 +239,8 @@ def jobs():
         with _connect(db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO jobs (title, link, status, yoe, location, keypoints, resume_tex, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (title, link, status, yoe, location, keypoints, resume_tex, overleaf_link, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     title or None,
@@ -223,6 +250,7 @@ def jobs():
                     location or None,
                     keypoints or None,
                     None,
+                    overleaf_link or None,
                     datetime.utcnow().isoformat(),
                 ),
             )
@@ -230,7 +258,7 @@ def jobs():
 
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, title, link, status, yoe, location, keypoints, resume_tex, created_at FROM jobs ORDER BY created_at DESC"
+            "SELECT id, title, link, status, yoe, location, keypoints, resume_tex, overleaf_link, created_at FROM jobs ORDER BY created_at DESC"
         ).fetchall()
         jobs_list = []
         for row in rows:
@@ -248,6 +276,7 @@ def jobs():
                     "location": row["location"],
                     "keypoints": row["keypoints"],
                     "resume_tex": row["resume_tex"],
+                    "overleaf_link": row["overleaf_link"],
                     "created_at": row["created_at"],
                     "connections": [
                         {
@@ -284,7 +313,7 @@ def update_job(job_id: int):
             return jsonify({"error": "invalid_status"}), 400
         fields["status"] = status
 
-    for key in ("title", "link", "yoe", "location", "keypoints"):
+    for key in ("title", "link", "yoe", "location", "keypoints", "overleaf_link"):
         if key in payload:
             fields[key] = (payload.get(key) or "").strip() or None
 
@@ -300,25 +329,6 @@ def update_job(job_id: int):
     return jsonify({"ok": True})
 
 
-@app.route("/api/jobs/<int:job_id>/resume", methods=["POST"])
-def upload_resume(job_id: int):
-    auth_error = _require_auth()
-    if auth_error:
-        return jsonify(auth_error[1]), 401
-
-    db_path = _current_user_db()
-    if not db_path:
-        return jsonify({"error": "no_db"}), 500
-
-    payload = request.get_json(silent=True) or {}
-    resume_tex = payload.get("resume_tex")
-    if resume_tex is None:
-        return jsonify({"error": "resume_required"}), 400
-
-    with _connect(db_path) as conn:
-        conn.execute("UPDATE jobs SET resume_tex = ? WHERE id = ?", (resume_tex, job_id))
-
-    return jsonify({"ok": True})
 
 
 @app.route("/api/jobs/<int:job_id>/connections", methods=["POST"])
