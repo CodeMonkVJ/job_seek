@@ -14,7 +14,7 @@ A lightweight job hunt tracker that keeps your search organized: job links, key 
 - Backend: Python, Flask, SQLite
 - Frontend: Vanilla JS + CSS (single page)
 
-## Local Setup
+## Local Setup (Dev Server)
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -24,18 +24,34 @@ python app.py
 
 Open `http://localhost:5000`.
 
-## Docker
+## Docker (Production Image)
 ### Build
 ```bash
 docker build -t job_seek:latest .
 ```
 
-### Run
+### Run (Detached, Expose Port)
 ```bash
-docker run --rm -p 5000:5000 \
+docker run -d --name job_seek \
+  -p 5000:5000 \
   -e JOB_SEEK_SECRET="change-me" \
   -v $(pwd)/job_seek:/app/data \
   job_seek:latest
+```
+
+Notes:
+- `-d` runs the container in the background (detached).
+- `-p 5000:5000` maps host port `5000` to container port `5000`.
+- Visit `http://localhost:5000` on the host.
+- The container runs Gunicorn for production. Override the command to tune workers/threads if needed, for example:
+```bash
+docker run ... job_seek:latest gunicorn --bind 0.0.0.0:5000 --workers 4 --threads 4 app:app
+```
+
+### Stop / Remove
+```bash
+docker stop job_seek
+docker rm job_seek
 ```
 
 Notes:
