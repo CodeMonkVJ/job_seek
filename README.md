@@ -55,7 +55,7 @@ docker rm job_seek
 ```
 
 Notes:
-- `JOB_SEEK_SECRET` should be a strong random string in production.
+- `JOB_SEEK_SECRET` should be a strong random string in production. It can be generated using - `python -c "import secrets; print(secrets.token_urlsafe(32))"`
 - The `data/` volume holds the global users DB and per-user SQLite files.
 
 ## Project Layout
