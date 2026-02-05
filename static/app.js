@@ -9,6 +9,7 @@ const jobForm = document.getElementById("job-form");
 const logoutBtn = document.getElementById("logout-btn");
 const authPanel = document.getElementById("auth-panel");
 const hero = document.getElementById("hero");
+const expandedJobIds = new Set();
 const jobKeypointsInput = document.querySelector("#job-form textarea[name=\"keypoints\"]");
 const jobKeypointsTags = document.getElementById("job-keypoints-tags");
 
@@ -50,23 +51,41 @@ const renderJobs = (jobs = []) => {
 
   jobsContainer.innerHTML = jobs
     .map((job) => {
+      const isExpanded = expandedJobIds.has(String(job.id));
       const connections = job.connections || [];
       const connectionsHtml = connections.length
         ? `<div class="connection-grid">${connections
             .map(
               (c) => `
-              <div class="connection-card">
-                <span class="connection-label">LinkedIn</span>
+              <div class="connection-card ${c.status === "REFERRED" ? "connection-referred" : ""}" data-connection-id="${c.id}">
+                <div class="connection-top">
+                  <span class="connection-label">LinkedIn</span>
+                  <select class="connection-status">
+                    ${["PENDING", "MESSAGED", "REFERRED"]
+                      .map(
+                        (status) =>
+                          `<option ${status === c.status ? "selected" : ""}>${status}</option>`
+                      )
+                      .join("")}
+                  </select>
+                  <div class="connection-actions">
+                    <button class="update-connection">Save</button>
+                    <button class="remove-connection ghost">Remove</button>
+                  </div>
+                </div>
                 <a href="${c.url}" target="_blank" rel="noopener">${c.url}</a>
               </div>`
             )
             .join("")}</div>`
         : "<p class=\"muted\">No connections yet.</p>";
 
+      const statusClass = `status-${(job.status || "").toLowerCase()}`;
       return `
-        <div class="job-card collapsed" data-id="${job.id}">
+        <div class="job-card ${isExpanded ? "" : "collapsed"} ${statusClass}" data-id="${job.id}">
           <div class="job-head">
-            <button class="collapse-toggle" aria-expanded="false">+</button>
+            <button class="collapse-toggle" aria-expanded="${isExpanded ? "true" : "false"}">${
+        isExpanded ? "−" : "+"
+      }</button>
             <div>
               <h4>${job.title || "Untitled role"}</h4>
               <a class="job-link" href="${job.link}" target="_blank" rel="noopener">${job.link}</a>
@@ -77,7 +96,7 @@ const renderJobs = (jobs = []) => {
               </div>
             </div>
           </div>
-          <div class="job-body hidden">
+          <div class="job-body ${isExpanded ? "" : "hidden"}">
             <div class="job-section">
               <label>Job title</label>
               <input type="text" class="title-input" value="${job.title || ""}" />
@@ -133,6 +152,16 @@ const renderJobs = (jobs = []) => {
 };
 
 const loadJobs = async () => {
+  if (jobsContainer) {
+    const cards = jobsContainer.querySelectorAll(".job-card");
+    expandedJobIds.clear();
+    cards.forEach((card) => {
+      const body = card.querySelector(".job-body");
+      if (body && !body.classList.contains("hidden")) {
+        expandedJobIds.add(card.dataset.id);
+      }
+    });
+  }
   const { jobs } = await api("/api/jobs");
   renderJobs(jobs);
 };
@@ -223,6 +252,11 @@ jobsContainer?.addEventListener("click", async (event) => {
     event.target.textContent = isHidden ? "−" : "+";
     event.target.setAttribute("aria-expanded", String(isHidden));
     card.classList.toggle("collapsed", !isHidden);
+    if (isHidden) {
+      expandedJobIds.add(jobId);
+    } else {
+      expandedJobIds.delete(jobId);
+    }
     return;
   }
 
@@ -278,7 +312,29 @@ jobsContainer?.addEventListener("click", async (event) => {
     const url = card.querySelector(".connection-url")?.value;
     await api(`/api/jobs/${jobId}/connections`, {
       method: "POST",
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, status: "PENDING" }),
+    });
+    await loadJobs();
+  }
+
+  if (event.target.classList.contains("update-connection")) {
+    const connectionCard = event.target.closest(".connection-card");
+    if (!connectionCard) return;
+    const connectionId = connectionCard.dataset.connectionId;
+    const status = connectionCard.querySelector(".connection-status")?.value;
+    await api(`/api/connections/${connectionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadJobs();
+  }
+
+  if (event.target.classList.contains("remove-connection")) {
+    const connectionCard = event.target.closest(".connection-card");
+    if (!connectionCard) return;
+    const connectionId = connectionCard.dataset.connectionId;
+    await api(`/api/connections/${connectionId}`, {
+      method: "DELETE",
     });
     await loadJobs();
   }

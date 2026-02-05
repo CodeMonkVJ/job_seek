@@ -110,6 +110,24 @@ textarea {
   border: 1px solid var(--border);
   font-family: var(--sans);
   font-size: 0.95rem;
+  background: #fff;
+}
+
+select {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--accent-dark) 50%),
+    linear-gradient(135deg, var(--accent-dark) 50%, transparent 50%),
+    linear-gradient(to right, #fff, #fff);
+  background-position: calc(100% - 16px) calc(50% - 3px), calc(100% - 10px) calc(50% - 3px),
+    100% 0;
+  background-size: 6px 6px, 6px 6px, 2.5em 3.5em;
+  background-repeat: no-repeat;
+  padding-right: 36px;
+}
+
+select:focus {
+  outline: 2px solid rgba(255, 107, 53, 0.3);
+  border-color: var(--accent);
 }
 
 textarea {
@@ -207,6 +225,18 @@ button.ghost:hover {
   align-self: start;
 }
 
+.job-card.collapsed.status-rejected {
+  background: #ffe3e1;
+}
+
+.job-card.collapsed.status-accepted {
+  background: #e6f6ec;
+}
+
+.job-card.collapsed.status-ongoing {
+  background: #fff4d6;
+}
+
 .job-head {
   display: flex;
   align-items: flex-start;
@@ -244,6 +274,10 @@ button.ghost:hover {
 
 .job-card.collapsed .job-head {
   align-items: center;
+}
+
+.job-card.collapsed .job-meta span {
+  font-weight: 700;
 }
 
 .job-tabs {
@@ -345,6 +379,34 @@ button.ghost:hover {
   padding: 10px 12px;
   display: grid;
   gap: 6px;
+}
+
+.connection-card.connection-referred {
+  background: #e6f6ec;
+  border-color: rgba(50, 150, 90, 0.4);
+}
+
+.connection-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.connection-top select {
+  max-width: 140px;
+}
+
+.connection-top button {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.connection-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
 }
 
 .connection-card a {

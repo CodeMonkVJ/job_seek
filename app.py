@@ -15,6 +15,7 @@ USERS_DIR = DATA_DIR / "users"
 GLOBAL_DB = DATA_DIR / "users.db"
 
 ALLOWED_STATUSES = {"APPLIED", "INTERESTED", "ONGOING", "ACCEPTED", "REJECTED"}
+ALLOWED_CONNECTION_STATUSES = {"REFERRED", "MESSAGED", "PENDING"}
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 app = Flask(__name__)
@@ -68,12 +69,14 @@ def init_user_db(db_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_id INTEGER NOT NULL,
                 url TEXT NOT NULL,
+                status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
             );
             """
         )
         _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_connections_column(conn, "status", "TEXT")
 
 
 def _ensure_jobs_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
@@ -83,12 +86,20 @@ def _ensure_jobs_column(conn: sqlite3.Connection, column: str, column_type: str)
         conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {column_type}")
 
 
+def _ensure_connections_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    existing = conn.execute("PRAGMA table_info(connections)").fetchall()
+    columns = {row["name"] for row in existing}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE connections ADD COLUMN {column} {column_type}")
+
+
 def ensure_user_db_schema(db_path: Path) -> None:
     if not db_path.exists():
         init_user_db(db_path)
         return
     with _connect(db_path) as conn:
         _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_connections_column(conn, "status", "TEXT")
 
 
 def _current_user_db() -> Path | None:
@@ -224,7 +235,7 @@ def jobs():
         jobs_list = []
         for row in rows:
             connections = conn.execute(
-                "SELECT id, url, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
+                "SELECT id, url, status, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
                 (row["id"],),
             ).fetchall()
             jobs_list.append(
@@ -239,7 +250,12 @@ def jobs():
                     "resume_tex": row["resume_tex"],
                     "created_at": row["created_at"],
                     "connections": [
-                        {"id": c["id"], "url": c["url"], "created_at": c["created_at"]}
+                        {
+                            "id": c["id"],
+                            "url": c["url"],
+                            "status": c["status"] or "PENDING",
+                            "created_at": c["created_at"],
+                        }
                         for c in connections
                     ],
                 }
@@ -320,11 +336,57 @@ def add_connection(job_id: int):
     if not url:
         return jsonify({"error": "url_required"}), 400
 
+    status = (payload.get("status") or "PENDING").strip().upper()
+    if status not in ALLOWED_CONNECTION_STATUSES:
+        return jsonify({"error": "invalid_connection_status"}), 400
+
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO connections (job_id, url, created_at) VALUES (?, ?, ?)",
-            (job_id, url, datetime.utcnow().isoformat()),
+            "INSERT INTO connections (job_id, url, status, created_at) VALUES (?, ?, ?, ?)",
+            (job_id, url, status, datetime.utcnow().isoformat()),
         )
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/connections/<int:connection_id>", methods=["PATCH"])
+def update_connection(connection_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    payload = request.get_json(silent=True) or {}
+    status = (payload.get("status") or "").strip().upper()
+    if status not in ALLOWED_CONNECTION_STATUSES:
+        return jsonify({"error": "invalid_connection_status"}), 400
+
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE connections SET status = ? WHERE id = ?",
+            (status, connection_id),
+        )
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/connections/<int:connection_id>", methods=["DELETE"])
+def delete_connection(connection_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM connections WHERE id = ?", (connection_id,))
 
     return jsonify({"ok": True})
 
