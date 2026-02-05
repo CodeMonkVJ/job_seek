@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 import urllib.request
 import re
 import sqlite3
@@ -73,6 +74,7 @@ def init_user_db(db_path: Path) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_id INTEGER NOT NULL,
                 url TEXT NOT NULL,
+                name TEXT,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
@@ -82,6 +84,7 @@ def init_user_db(db_path: Path) -> None:
         _ensure_jobs_column(conn, "title", "TEXT")
         _ensure_jobs_column(conn, "overleaf_link", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
+        _ensure_connections_column(conn, "name", "TEXT")
 
 
 def _ensure_jobs_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
@@ -106,6 +109,42 @@ def ensure_user_db_schema(db_path: Path) -> None:
         _ensure_jobs_column(conn, "title", "TEXT")
         _ensure_jobs_column(conn, "overleaf_link", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
+        _ensure_connections_column(conn, "name", "TEXT")
+
+
+def _derive_connection_name(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None
+
+    path = parsed.path or ""
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        return None
+
+    slug = None
+    for marker in ("in", "pub"):
+        if marker in segments:
+            idx = segments.index(marker)
+            if idx + 1 < len(segments):
+                slug = segments[idx + 1]
+                break
+
+    if not slug:
+        slug = segments[-1]
+
+    slug = urllib.parse.unquote(slug).strip()
+    if not slug:
+        return None
+
+    tokens = [t for t in re.split(r"[-_]+", slug) if t and not t.isdigit()]
+    if not tokens:
+        return None
+
+    return " ".join(tokens).title()
 
 
 def _current_user_db() -> Path | None:
@@ -220,6 +259,7 @@ def jobs():
     if not db_path:
         return jsonify({"error": "no_db"}), 500
     ensure_user_db_schema(db_path)
+    ensure_user_db_schema(db_path)
 
     if request.method == "POST":
         payload = request.get_json(silent=True) or {}
@@ -263,7 +303,7 @@ def jobs():
         jobs_list = []
         for row in rows:
             connections = conn.execute(
-                "SELECT id, url, status, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
+                "SELECT id, url, name, status, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
                 (row["id"],),
             ).fetchall()
             jobs_list.append(
@@ -282,6 +322,7 @@ def jobs():
                         {
                             "id": c["id"],
                             "url": c["url"],
+                            "name": c["name"] or _derive_connection_name(c["url"]),
                             "status": c["status"] or "PENDING",
                             "created_at": c["created_at"],
                         }
@@ -350,10 +391,12 @@ def add_connection(job_id: int):
     if status not in ALLOWED_CONNECTION_STATUSES:
         return jsonify({"error": "invalid_connection_status"}), 400
 
+    name = _derive_connection_name(url)
+
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO connections (job_id, url, status, created_at) VALUES (?, ?, ?, ?)",
-            (job_id, url, status, datetime.utcnow().isoformat()),
+            "INSERT INTO connections (job_id, url, name, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (job_id, url, name, status, datetime.utcnow().isoformat()),
         )
 
     return jsonify({"ok": True})

@@ -421,10 +421,30 @@ button.ghost:hover {
   align-items: center;
 }
 
+.connection-main {
+  display: grid;
+  gap: 2px;
+}
+
+.connection-name {
+  font-weight: 600;
+  color: var(--accent-dark);
+  text-decoration: none;
+}
+
+.connection-name:hover {
+  text-decoration: underline;
+}
+
+.connection-url {
+  font-size: 0.85rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
 .connection-card a {
   color: var(--accent-dark);
   text-decoration: none;
-  word-break: break-all;
 }
 
 .connection-card a:hover {

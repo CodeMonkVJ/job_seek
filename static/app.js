@@ -42,6 +42,44 @@ const renderTags = (tags = []) =>
     ? `<div class="tag-list">${tags.map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>`
     : `<p class="muted">No key points yet.</p>`;
 
+const deriveConnectionName = (url = "") => {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    let slug = "";
+    const inIndex = segments.indexOf("in");
+    const pubIndex = segments.indexOf("pub");
+    if (inIndex !== -1 && segments[inIndex + 1]) {
+      slug = segments[inIndex + 1];
+    } else if (pubIndex !== -1 && segments[pubIndex + 1]) {
+      slug = segments[pubIndex + 1];
+    } else {
+      slug = segments[segments.length - 1] || "";
+    }
+    if (!slug) return "";
+    const tokens = slug
+      .split(/[-_]+/)
+      .map((t) => t.trim())
+      .filter((t) => t && !/^\d+$/.test(t));
+    if (!tokens.length) return "";
+    return tokens.map((t) => t[0].toUpperCase() + t.slice(1)).join(" ");
+  } catch {
+    return "";
+  }
+};
+
+const formatUrl = (url = "") => {
+  if (!url) return "";
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.replace(/\/$/, "");
+    return `${parsed.hostname}${path}`;
+  } catch {
+    return url;
+  }
+};
+
 const renderJobs = (jobs = []) => {
   if (!jobsContainer) return;
   if (!jobs.length) {
@@ -56,7 +94,10 @@ const renderJobs = (jobs = []) => {
       const connectionsHtml = connections.length
         ? `<div class="connection-grid">${connections
             .map(
-              (c) => `
+              (c) => {
+                const name = c.name || deriveConnectionName(c.url) || "LinkedIn profile";
+                const urlLabel = formatUrl(c.url);
+                return `
               <div class="connection-card ${c.status === "REFERRED" ? "connection-referred" : ""}" data-connection-id="${c.id}">
                 <div class="connection-top">
                   <span class="connection-label">LinkedIn</span>
@@ -73,8 +114,12 @@ const renderJobs = (jobs = []) => {
                     <button class="remove-connection ghost">Remove</button>
                   </div>
                 </div>
-                <a href="${c.url}" target="_blank" rel="noopener">${c.url}</a>
-              </div>`
+                <div class="connection-main">
+                  <a class="connection-name" href="${c.url}" target="_blank" rel="noopener">${name}</a>
+                  <span class="connection-url">${urlLabel}</span>
+                </div>
+              </div>`;
+              }
             )
             .join("")}</div>`
         : "<p class=\"muted\">No connections yet.</p>";
