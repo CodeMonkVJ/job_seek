@@ -334,7 +334,7 @@ def jobs():
     return jsonify({"jobs": jobs_list})
 
 
-@app.route("/api/jobs/<int:job_id>", methods=["PATCH"])
+@app.route("/api/jobs/<int:job_id>", methods=["PATCH", "DELETE"])
 def update_job(job_id: int):
     auth_error = _require_auth()
     if auth_error:
@@ -344,6 +344,12 @@ def update_job(job_id: int):
     if not db_path:
         return jsonify({"error": "no_db"}), 500
     ensure_user_db_schema(db_path)
+
+    if request.method == "DELETE":
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM connections WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return jsonify({"ok": True})
 
     payload = request.get_json(silent=True) or {}
     fields = {}

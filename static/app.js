@@ -7,11 +7,17 @@ const loginForm = document.getElementById("login-form");
 const registerForm = document.getElementById("register-form");
 const jobForm = document.getElementById("job-form");
 const logoutBtn = document.getElementById("logout-btn");
+const mobileAddToggleBtn = document.getElementById("mobile-add-toggle");
+const addJobPanel = document.getElementById("add-job-panel");
 const authPanel = document.getElementById("auth-panel");
 const hero = document.getElementById("hero");
 const expandedJobIds = new Set();
+const jobLinkInput = document.querySelector("#job-form input[name=\"link\"]");
 const jobKeypointsInput = document.querySelector("#job-form textarea[name=\"keypoints\"]");
 const jobKeypointsTags = document.getElementById("job-keypoints-tags");
+const generateKeypointsBtn = document.getElementById("generate-keypoints-btn");
+const mobileAddMediaQuery = window.matchMedia("(max-width: 700px)");
+let isMobileAddPanelOpen = false;
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, {
@@ -31,6 +37,40 @@ const setMsg = (el, text) => {
   el.textContent = text;
 };
 
+const escapeHtml = (text = "") =>
+  text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
+const youtubeSearchUrl = (term = "") =>
+  `https://www.youtube.com/results?search_query=${encodeURIComponent(term)}`;
+
+const buildKeypointPrompt = (jobLink = "") =>
+  `You have to give linebreak separated tags related to the mentioned job link - ${jobLink}
+I only want to see 10-20 important topics related to this job post listing. DON'T TYPE ANYTHING ELSE. Only topics which i can search on youtube and learn about which will help me in clearing the interviews for the job.`;
+
+const updateGenerateTagsBtn = () => {
+  if (!generateKeypointsBtn) return;
+  const hasJobLink = Boolean(jobLinkInput?.value.trim());
+  generateKeypointsBtn.classList.toggle("hidden", !hasJobLink);
+};
+
+const syncMobileAddPanel = () => {
+  if (!mobileAddToggleBtn || !addJobPanel) return;
+  if (mobileAddMediaQuery.matches) {
+    addJobPanel.classList.toggle("mobile-open", isMobileAddPanelOpen);
+    mobileAddToggleBtn.textContent = isMobileAddPanelOpen ? "Close add form" : "Add job";
+    mobileAddToggleBtn.setAttribute("aria-expanded", String(isMobileAddPanelOpen));
+    return;
+  }
+  addJobPanel.classList.remove("mobile-open");
+  mobileAddToggleBtn.textContent = "Add job";
+  mobileAddToggleBtn.setAttribute("aria-expanded", "false");
+};
+
 const toTags = (text = "") =>
   text
     .split(/\r?\n/)
@@ -39,7 +79,12 @@ const toTags = (text = "") =>
 
 const renderTags = (tags = []) =>
   tags.length
-    ? `<div class="tag-list">${tags.map((tag) => `<span class="tag">${tag}</span>`).join("")}</div>`
+    ? `<div class="tag-list">${tags
+        .map(
+          (tag) =>
+            `<a class="tag tag-link" href="${youtubeSearchUrl(tag)}" target="_blank" rel="noopener noreferrer">${escapeHtml(tag)}</a>`
+        )
+        .join("")}</div>`
     : `<p class="muted">No key points yet.</p>`;
 
 const deriveConnectionName = (url = "") => {
@@ -194,6 +239,9 @@ const renderJobs = (jobs = []) => {
                 ${connectionsHtml}
               </div>
             </div>
+            <div class="job-section">
+              <button class="delete-job ghost">Delete job</button>
+            </div>
           </div>
         </div>
       `;
@@ -277,6 +325,11 @@ jobForm?.addEventListener("submit", async (event) => {
     if (jobKeypointsTags) {
       jobKeypointsTags.innerHTML = renderTags([]);
     }
+    if (mobileAddMediaQuery.matches) {
+      isMobileAddPanelOpen = false;
+      syncMobileAddPanel();
+    }
+    updateGenerateTagsBtn();
     await loadJobs();
     setMsg(jobMsg, "Job added.");
   } catch (err) {
@@ -288,6 +341,23 @@ jobKeypointsInput?.addEventListener("input", () => {
   if (!jobKeypointsTags) return;
   jobKeypointsTags.innerHTML = renderTags(toTags(jobKeypointsInput.value));
 });
+
+jobLinkInput?.addEventListener("input", updateGenerateTagsBtn);
+
+generateKeypointsBtn?.addEventListener("click", () => {
+  const jobLink = jobLinkInput?.value.trim();
+  if (!jobLink) return;
+  const prompt = buildKeypointPrompt(jobLink);
+  const url = `https://chatgpt.com/?q=${encodeURIComponent(prompt)}`;
+  window.open(url, "_blank", "noopener,noreferrer");
+});
+
+mobileAddToggleBtn?.addEventListener("click", () => {
+  isMobileAddPanelOpen = !isMobileAddPanelOpen;
+  syncMobileAddPanel();
+});
+
+mobileAddMediaQuery.addEventListener("change", syncMobileAddPanel);
 
 jobsContainer?.addEventListener("click", async (event) => {
   const card = event.target.closest(".job-card");
@@ -388,6 +458,16 @@ jobsContainer?.addEventListener("click", async (event) => {
     });
     await loadJobs();
   }
+
+  if (event.target.classList.contains("delete-job")) {
+    const shouldDelete = window.confirm("Delete this job and its LinkedIn connections?");
+    if (!shouldDelete) return;
+    await api(`/api/jobs/${jobId}`, {
+      method: "DELETE",
+    });
+    expandedJobIds.delete(jobId);
+    await loadJobs();
+  }
 });
 
 jobsContainer?.addEventListener("input", (event) => {
@@ -404,7 +484,11 @@ logoutBtn?.addEventListener("click", async () => {
   dashboard.classList.add("hidden");
   authPanel?.classList.remove("hidden");
   hero?.classList.remove("hidden");
+  isMobileAddPanelOpen = false;
+  syncMobileAddPanel();
   setMsg(authMsg, "Logged out.");
 });
 
 init();
+updateGenerateTagsBtn();
+syncMobileAddPanel();

@@ -102,6 +102,19 @@ label {
   color: var(--muted);
 }
 
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.field-action {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
 input,
 select,
 textarea {
@@ -187,6 +200,16 @@ button.ghost:hover {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.dash-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-add-btn {
+  display: none;
 }
 
 .muted {
@@ -378,6 +401,15 @@ button.ghost:hover {
   border: 1px solid rgba(193, 72, 31, 0.3);
 }
 
+.tag-link {
+  text-decoration: none;
+}
+
+.tag-link:hover {
+  text-decoration: none;
+  filter: brightness(0.97);
+}
+
 .connection-grid {
   display: grid;
   gap: 10px;
@@ -466,5 +498,19 @@ button.ghost:hover {
 
   .dash-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 700px) {
+  .mobile-add-btn {
+    display: inline-flex;
+  }
+
+  #add-job-panel {
+    display: none;
+  }
+
+  #add-job-panel.mobile-open {
+    display: block;
   }
 }
