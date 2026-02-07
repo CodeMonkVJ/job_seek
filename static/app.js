@@ -48,6 +48,12 @@ const escapeHtml = (text = "") =>
 const youtubeSearchUrl = (term = "") =>
   `https://www.youtube.com/results?search_query=${encodeURIComponent(term)}`;
 
+const buildChatgptTrainingPrompt = (topic = "") =>
+  `you are an expert in ${topic}. You are to help me get better at it. I might ask you to chart a learning plan/give helpful questions for prepping/give me problems to solve/anything else an industry expert tutor can help me with. Don't reply with anything right now just say understood let's start learning ${topic}`;
+
+const chatgptTrainingUrl = (topic = "") =>
+  `https://chatgpt.com/?q=${encodeURIComponent(buildChatgptTrainingPrompt(topic))}`;
+
 const buildKeypointPrompt = (jobLink = "") =>
   `You have to give linebreak separated tags related to the mentioned job link - ${jobLink}
 I only want to see 10-20 important topics related to this job post listing. DON'T TYPE ANYTHING ELSE. Only topics which i can search on youtube and learn about which will help me in clearing the interviews for the job.`;
@@ -82,7 +88,33 @@ const renderTags = (tags = []) =>
     ? `<div class="tag-list">${tags
         .map(
           (tag) =>
-            `<a class="tag tag-link" href="${youtubeSearchUrl(tag)}" target="_blank" rel="noopener noreferrer">${escapeHtml(tag)}</a>`
+            `<span class="tag-split">
+              <a
+                class="tag-icon tag-icon-youtube"
+                href="${youtubeSearchUrl(tag)}"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Learn on Youtube"
+                aria-label="Learn on Youtube: ${escapeHtml(tag)}"
+              >
+                <svg class="tag-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M10 8L16 12L10 16V8Z" fill="currentColor"></path>
+                </svg>
+              </a>
+              <span class="tag-label">${escapeHtml(tag)}</span>
+              <a
+                class="tag-icon tag-icon-chatgpt"
+                href="${chatgptTrainingUrl(tag)}"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Learn using ChatGPT"
+                aria-label="Learn using ChatGPT: ${escapeHtml(tag)}"
+              >
+                <svg class="tag-icon-svg" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 6L13.6 10.4L18 12L13.6 13.6L12 18L10.4 13.6L6 12L10.4 10.4L12 6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
+                </svg>
+              </a>
+            </span>`
         )
         .join("")}</div>`
     : `<p class="muted">No key points yet.</p>`;

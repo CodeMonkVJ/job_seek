@@ -390,24 +390,54 @@ button.ghost:hover {
   gap: 8px;
 }
 
-.tag {
+.tag-split {
   display: inline-flex;
   align-items: center;
-  padding: 6px 12px;
   border-radius: 999px;
   background: #ffe4d6;
-  color: #5a2b18;
-  font-size: 0.85rem;
   border: 1px solid rgba(193, 72, 31, 0.3);
+  padding: 2px;
+  gap: 6px;
 }
 
-.tag-link {
-  text-decoration: none;
+.tag-label {
+  display: inline-block;
+  padding: 4px 2px;
+  font-size: 0.85rem;
+  color: #5a2b18;
 }
 
-.tag-link:hover {
+.tag-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-decoration: none;
-  filter: brightness(0.97);
+  flex: 0 0 auto;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.tag-icon:hover {
+  transform: translateY(-1px);
+  filter: brightness(0.96);
+}
+
+.tag-icon-svg {
+  width: 12px;
+  height: 12px;
+}
+
+.tag-icon-youtube {
+  background: #ff4e45;
+  color: #fff;
+}
+
+.tag-icon-chatgpt {
+  background: #f3efe8;
+  color: #2f4f3e;
+  border: 1px solid rgba(47, 79, 62, 0.28);
 }
 
 .connection-grid {
