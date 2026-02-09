@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request
 import re
 import sqlite3
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,7 @@ TEXLIVE_CACHE_DIR = DATA_DIR / "texlive" / "pdftex"
 
 ALLOWED_STATUSES = {"APPLIED", "INTERESTED", "ONGOING", "ACCEPTED", "REJECTED"}
 ALLOWED_CONNECTION_STATUSES = {"REFERRED", "MESSAGED", "PENDING"}
+ALLOWED_KEYPOINT_STATUSES = {"DONE", "PENDING"}
 TEXLIVE_BASE = "https://texlive.swiftlatex.com/pdftex/"
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
@@ -83,6 +85,7 @@ def init_user_db(db_path: Path) -> None:
         )
         _ensure_jobs_column(conn, "title", "TEXT")
         _ensure_jobs_column(conn, "overleaf_link", "TEXT")
+        _ensure_jobs_column(conn, "keypoint_statuses", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
         _ensure_connections_column(conn, "name", "TEXT")
 
@@ -101,6 +104,38 @@ def _ensure_connections_column(conn: sqlite3.Connection, column: str, column_typ
         conn.execute(f"ALTER TABLE connections ADD COLUMN {column} {column_type}")
 
 
+def _normalize_keypoint_statuses(raw_statuses: list[dict]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_statuses:
+        if not isinstance(item, dict):
+            continue
+        tag = (item.get("tag") or "").strip()
+        if not tag:
+            continue
+        status = (item.get("status") or "PENDING").strip().upper()
+        if status not in ALLOWED_KEYPOINT_STATUSES:
+            status = "PENDING"
+        dedupe_key = tag.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append({"tag": tag, "status": status})
+    return normalized
+
+
+def _deserialize_keypoint_statuses(raw_value: str | None) -> list[dict[str, str]]:
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return _normalize_keypoint_statuses(parsed)
+
+
 def ensure_user_db_schema(db_path: Path) -> None:
     if not db_path.exists():
         init_user_db(db_path)
@@ -108,6 +143,7 @@ def ensure_user_db_schema(db_path: Path) -> None:
     with _connect(db_path) as conn:
         _ensure_jobs_column(conn, "title", "TEXT")
         _ensure_jobs_column(conn, "overleaf_link", "TEXT")
+        _ensure_jobs_column(conn, "keypoint_statuses", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
         _ensure_connections_column(conn, "name", "TEXT")
 
@@ -269,18 +305,27 @@ def jobs():
         yoe = (payload.get("yoe") or "").strip()
         location = (payload.get("location") or "").strip()
         keypoints = (payload.get("keypoints") or "").strip()
+        raw_keypoint_statuses = payload.get("keypoint_statuses")
         overleaf_link = (payload.get("overleaf_link") or "").strip()
 
         if not link:
             return jsonify({"error": "link_required"}), 400
         if status not in ALLOWED_STATUSES:
             return jsonify({"error": "invalid_status"}), 400
+        if raw_keypoint_statuses is not None and not isinstance(raw_keypoint_statuses, list):
+            return jsonify({"error": "invalid_keypoint_statuses"}), 400
+        keypoint_statuses = (
+            _normalize_keypoint_statuses(raw_keypoint_statuses)
+            if isinstance(raw_keypoint_statuses, list)
+            else []
+        )
+        keypoint_statuses_json = json.dumps(keypoint_statuses) if keypoint_statuses else None
 
         with _connect(db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO jobs (title, link, status, yoe, location, keypoints, resume_tex, overleaf_link, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (title, link, status, yoe, location, keypoints, keypoint_statuses, resume_tex, overleaf_link, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     title or None,
@@ -289,6 +334,7 @@ def jobs():
                     yoe or None,
                     location or None,
                     keypoints or None,
+                    keypoint_statuses_json,
                     None,
                     overleaf_link or None,
                     datetime.utcnow().isoformat(),
@@ -298,7 +344,7 @@ def jobs():
 
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, title, link, status, yoe, location, keypoints, resume_tex, overleaf_link, created_at FROM jobs ORDER BY created_at DESC"
+            "SELECT id, title, link, status, yoe, location, keypoints, keypoint_statuses, resume_tex, overleaf_link, created_at FROM jobs ORDER BY created_at DESC"
         ).fetchall()
         jobs_list = []
         for row in rows:
@@ -315,6 +361,7 @@ def jobs():
                     "yoe": row["yoe"],
                     "location": row["location"],
                     "keypoints": row["keypoints"],
+                    "keypoint_statuses": _deserialize_keypoint_statuses(row["keypoint_statuses"]),
                     "resume_tex": row["resume_tex"],
                     "overleaf_link": row["overleaf_link"],
                     "created_at": row["created_at"],
@@ -363,6 +410,17 @@ def update_job(job_id: int):
     for key in ("title", "link", "yoe", "location", "keypoints", "overleaf_link"):
         if key in payload:
             fields[key] = (payload.get(key) or "").strip() or None
+
+    if "keypoint_statuses" in payload:
+        raw_keypoint_statuses = payload.get("keypoint_statuses")
+        if raw_keypoint_statuses is not None and not isinstance(raw_keypoint_statuses, list):
+            return jsonify({"error": "invalid_keypoint_statuses"}), 400
+        keypoint_statuses = (
+            _normalize_keypoint_statuses(raw_keypoint_statuses)
+            if isinstance(raw_keypoint_statuses, list)
+            else []
+        )
+        fields["keypoint_statuses"] = json.dumps(keypoint_statuses) if keypoint_statuses else None
 
     if not fields:
         return jsonify({"error": "no_fields"}), 400

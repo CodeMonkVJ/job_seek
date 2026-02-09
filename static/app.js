@@ -83,12 +83,62 @@ const toTags = (text = "") =>
     .map((line) => line.trim())
     .filter(Boolean);
 
-const renderTags = (tags = []) =>
-  tags.length
-    ? `<div class="tag-list">${tags
+const normalizeTagKey = (tag = "") => tag.trim().toLowerCase();
+
+const buildKeypointStatusMap = (items = []) => {
+  const map = new Map();
+  if (!Array.isArray(items)) return map;
+  items.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const tag = (item.tag || "").trim();
+    if (!tag) return;
+    const status = (item.status || "PENDING").toUpperCase() === "DONE" ? "DONE" : "PENDING";
+    map.set(normalizeTagKey(tag), status);
+  });
+  return map;
+};
+
+const buildStatusesForTags = (tags = [], statusMap = new Map()) => {
+  const seen = new Set();
+  const statuses = [];
+  tags.forEach((tag) => {
+    const key = normalizeTagKey(tag);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    statuses.push({
+      tag,
+      status: statusMap.get(key) === "DONE" ? "DONE" : "PENDING",
+    });
+  });
+  return statuses;
+};
+
+const getCardStatuses = (card) => {
+  if (!card?.dataset?.keypointStatuses) return [];
+  try {
+    const parsed = JSON.parse(card.dataset.keypointStatuses);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const setCardStatuses = (card, statuses = []) => {
+  if (!card) return;
+  card.dataset.keypointStatuses = JSON.stringify(statuses);
+};
+
+const renderTags = (tags = [], options = {}) => {
+  const { statusMap = new Map(), interactive = false } = options;
+  const uniqueTags = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+  return uniqueTags.length
+    ? `<div class="tag-list">${uniqueTags
         .map(
-          (tag) =>
-            `<span class="tag-split">
+          (tag) => {
+            const tagKey = normalizeTagKey(tag);
+            const status = statusMap.get(tagKey) === "DONE" ? "DONE" : "PENDING";
+            const doneClass = status === "DONE" ? "tag-done" : "";
+            return `<span class="tag-split ${doneClass}" data-tag="${escapeHtml(tag)}">
               <a
                 class="tag-icon tag-icon-youtube"
                 href="${youtubeSearchUrl(tag)}"
@@ -101,7 +151,13 @@ const renderTags = (tags = []) =>
                   <path d="M10 8L16 12L10 16V8Z" fill="currentColor"></path>
                 </svg>
               </a>
-              <span class="tag-label">${escapeHtml(tag)}</span>
+              ${
+                interactive
+                  ? `<button type="button" class="tag-label-btn" data-tag="${escapeHtml(
+                      tag
+                    )}" title="Toggle status">${escapeHtml(tag)}</button>`
+                  : `<span class="tag-label">${escapeHtml(tag)}</span>`
+              }
               <a
                 class="tag-icon tag-icon-chatgpt"
                 href="${chatgptTrainingUrl(tag)}"
@@ -114,10 +170,12 @@ const renderTags = (tags = []) =>
                   <path d="M12 6L13.6 10.4L18 12L13.6 13.6L12 18L10.4 13.6L6 12L10.4 10.4L12 6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
                 </svg>
               </a>
-            </span>`
+            </span>`;
+          }
         )
         .join("")}</div>`
     : `<p class="muted">No key points yet.</p>`;
+};
 
 const deriveConnectionName = (url = "") => {
   if (!url) return "";
@@ -168,6 +226,9 @@ const renderJobs = (jobs = []) => {
     .map((job) => {
       const isExpanded = expandedJobIds.has(String(job.id));
       const connections = job.connections || [];
+      const keypointStatusMap = buildKeypointStatusMap(job.keypoint_statuses || []);
+      const tags = toTags(job.keypoints || "");
+      const statuses = buildStatusesForTags(tags, keypointStatusMap);
       const connectionsHtml = connections.length
         ? `<div class="connection-grid">${connections
             .map(
@@ -203,7 +264,9 @@ const renderJobs = (jobs = []) => {
 
       const statusClass = `status-${(job.status || "").toLowerCase()}`;
       return `
-        <div class="job-card ${isExpanded ? "" : "collapsed"} ${statusClass}" data-id="${job.id}">
+        <div class="job-card ${isExpanded ? "" : "collapsed"} ${statusClass}" data-id="${
+        job.id
+      }" data-keypoint-statuses='${escapeHtml(JSON.stringify(statuses))}'>
           <div class="job-head">
             <button class="collapse-toggle" aria-expanded="${isExpanded ? "true" : "false"}">${
         isExpanded ? "−" : "+"
@@ -246,7 +309,7 @@ const renderJobs = (jobs = []) => {
                 <label>Key points</label>
                 <textarea class="keypoints" rows="3">${job.keypoints || ""}</textarea>
                 <div class="tag-area">
-                  ${renderTags(toTags(job.keypoints || ""))}
+                  ${renderTags(tags, { statusMap: buildKeypointStatusMap(statuses), interactive: true })}
                 </div>
                 <button class="update-keypoints">Save key points</button>
               </div>
@@ -444,11 +507,38 @@ jobsContainer?.addEventListener("click", async (event) => {
 
   if (event.target.classList.contains("update-keypoints")) {
     const keypoints = card.querySelector(".keypoints")?.value;
+    const tags = toTags(keypoints || "");
+    const statusMap = buildKeypointStatusMap(getCardStatuses(card));
+    const keypoint_statuses = buildStatusesForTags(tags, statusMap);
+    setCardStatuses(card, keypoint_statuses);
     await api(`/api/jobs/${jobId}`, {
       method: "PATCH",
-      body: JSON.stringify({ keypoints }),
+      body: JSON.stringify({ keypoints, keypoint_statuses }),
     });
     await loadJobs();
+  }
+
+  if (event.target.classList.contains("tag-label-btn")) {
+    const tag = (event.target.dataset.tag || "").trim();
+    if (!tag) return;
+    const textarea = card.querySelector(".keypoints");
+    const tags = toTags(textarea?.value || "");
+    const statusMap = buildKeypointStatusMap(getCardStatuses(card));
+    const tagKey = normalizeTagKey(tag);
+    statusMap.set(tagKey, statusMap.get(tagKey) === "DONE" ? "PENDING" : "DONE");
+    const keypoint_statuses = buildStatusesForTags(tags, statusMap);
+    setCardStatuses(card, keypoint_statuses);
+    const tagArea = card.querySelector(".tag-area");
+    if (tagArea) {
+      tagArea.innerHTML = renderTags(tags, {
+        statusMap: buildKeypointStatusMap(keypoint_statuses),
+        interactive: true,
+      });
+    }
+    await api(`/api/jobs/${jobId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ keypoint_statuses }),
+    });
   }
 
   if (event.target.classList.contains("save-overleaf")) {
@@ -508,7 +598,11 @@ jobsContainer?.addEventListener("input", (event) => {
   if (!card) return;
   const tagArea = card.querySelector(".tag-area");
   if (!tagArea) return;
-  tagArea.innerHTML = renderTags(toTags(event.target.value));
+  const tags = toTags(event.target.value);
+  const statusMap = buildKeypointStatusMap(getCardStatuses(card));
+  const statuses = buildStatusesForTags(tags, statusMap);
+  setCardStatuses(card, statuses);
+  tagArea.innerHTML = renderTags(tags, { statusMap: buildKeypointStatusMap(statuses), interactive: true });
 });
 
 logoutBtn?.addEventListener("click", async () => {

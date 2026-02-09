@@ -262,7 +262,7 @@ button.ghost:hover {
 
 .job-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 
@@ -276,6 +276,12 @@ button.ghost:hover {
   font-family: var(--mono);
   font-size: 1.1rem;
   padding: 0;
+}
+
+.collapse-toggle:hover,
+.collapse-toggle:active {
+  transform: none;
+  box-shadow: none;
 }
 
 .job-body {
@@ -400,11 +406,47 @@ button.ghost:hover {
   gap: 6px;
 }
 
-.tag-label {
-  display: inline-block;
-  padding: 4px 2px;
+.tag-split.tag-done {
+  background: #e6f6ec;
+  border-color: rgba(50, 150, 90, 0.45);
+}
+
+.tag-label,
+.tag-label-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 2px;
   font-size: 0.85rem;
+  line-height: 1;
   color: #5a2b18;
+  vertical-align: middle;
+  position: relative;
+  top: -2px;
+}
+
+.tag-label-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  margin: 0;
+  font-family: inherit;
+  font-weight: 500;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.tag-label-btn:hover {
+  transform: none;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
+.tag-done .tag-label-btn,
+.tag-done .tag-label {
+  color: #1f5f3b;
+  font-weight: 700;
 }
 
 .tag-icon {
