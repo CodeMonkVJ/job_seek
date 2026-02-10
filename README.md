@@ -1,4 +1,4 @@
-# job_seek
+# [job_seek](https://jobseek.codemonkapps.me)
 
 A lightweight job hunt tracker that keeps your search organized: job links, key points, status, LinkedIn outreach, and your Overleaf resume link — all in one place. Built with Flask + SQLite and a single-page UI.
 
