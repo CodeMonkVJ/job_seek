@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>job_seek</title>
     <link rel="icon" href="/static/favicon.png" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -168,6 +171,13 @@
                   <img class="flat-map-base" src="/static/world.svg" alt="World map" draggable="false" />
                   <div id="flat-map-markers" class="flat-map-markers" aria-hidden="false"></div>
                 </div>
+                <div class="map-touch-controls" aria-label="Map controls">
+                  <button id="map-zoom-in" type="button" class="map-control-btn" aria-label="Zoom in">+</button>
+                  <button id="map-zoom-out" type="button" class="map-control-btn" aria-label="Zoom out">-</button>
+                  <button id="map-reset-view" type="button" class="map-control-btn" aria-label="Reset map view">
+                    Reset
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -177,6 +187,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js?v=20260215s"></script>
+    <script src="/static/app.js?v=20260215v"></script>
   </body>
 </html>

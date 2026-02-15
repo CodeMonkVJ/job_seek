@@ -7,7 +7,7 @@ import urllib.request
 import re
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,6 +29,17 @@ USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("JOB_SEEK_SECRET", "dev-secret-change-me")
+try:
+    session_days = int(os.environ.get("JOB_SEEK_SESSION_DAYS", "30"))
+except ValueError:
+    session_days = 30
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(1, session_days))
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = (
+    os.environ.get("JOB_SEEK_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -423,6 +434,8 @@ def login():
     if not row or not check_password_hash(row["password_hash"], password):
         return jsonify({"error": "invalid_credentials"}), 401
 
+    session.clear()
+    session.permanent = True
     session["user_id"] = row["id"]
     session["username"] = row["username"]
     session["db_path"] = row["db_path"]

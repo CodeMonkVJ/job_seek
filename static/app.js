@@ -23,6 +23,9 @@ const mapViewport = document.getElementById("flat-map-viewport");
 const mapStage = document.getElementById("flat-map-stage");
 const mapMarkers = document.getElementById("flat-map-markers");
 const mapSummary = document.getElementById("map-summary");
+const mapZoomInBtn = document.getElementById("map-zoom-in");
+const mapZoomOutBtn = document.getElementById("map-zoom-out");
+const mapResetViewBtn = document.getElementById("map-reset-view");
 const leftTabAddBtn = document.getElementById("left-tab-add");
 const leftTabMapBtn = document.getElementById("left-tab-map");
 const leftViewAdd = document.getElementById("left-view-add");
@@ -33,8 +36,9 @@ const mobileAddMediaQuery = window.matchMedia("(max-width: 700px)");
 let isMobilePanelOpen = false;
 const cityLookup = new Map();
 let citySearchDebounce = null;
+const DEFAULT_MAP_ZOOM = 1.45;
 let isMapReady = false;
-let mapZoom = 1;
+let mapZoom = DEFAULT_MAP_ZOOM;
 let mapPanX = 0;
 let mapPanY = 0;
 let mapDragging = false;
@@ -50,6 +54,58 @@ let selectedCityKey = "";
 let selectedCityLabel = "";
 let activeLeftView = "add";
 const MAP_ASPECT_RATIO = 2000 / 857;
+const ROBINSON_LAT_STEP = 5;
+const ROBINSON_FXC = 0.8487;
+const ROBINSON_FYC = 1.3523;
+const ROBINSON_X = [
+  1,
+  0.9986,
+  0.9954,
+  0.99,
+  0.9822,
+  0.973,
+  0.96,
+  0.9427,
+  0.9216,
+  0.8962,
+  0.8679,
+  0.835,
+  0.7986,
+  0.7597,
+  0.7186,
+  0.6732,
+  0.6213,
+  0.5722,
+  0.5322,
+];
+const ROBINSON_Y = [
+  0,
+  0.062,
+  0.124,
+  0.186,
+  0.248,
+  0.31,
+  0.372,
+  0.434,
+  0.4958,
+  0.5571,
+  0.6176,
+  0.6769,
+  0.7346,
+  0.7903,
+  0.8435,
+  0.8936,
+  0.9394,
+  0.9761,
+  1,
+];
+const ROBINSON_X_MAX = ROBINSON_FXC * Math.PI;
+const ROBINSON_Y_MAX = ROBINSON_FYC;
+const MAP_X_ALIGNMENT_SHIFT_PERCENT = -0.8;
+const MAP_Y_ALIGNMENT_SHIFT_PERCENT = 3.8;
+const MIN_MAP_ZOOM = 1;
+const MAX_MAP_ZOOM = 6;
+const MIN_MARKER_SCREEN_SCALE = 0.7;
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, {
@@ -176,7 +232,7 @@ const toggleMobilePanelView = (view) => {
     return;
   }
   if (view === "map") {
-    mapZoom = 1;
+    mapZoom = DEFAULT_MAP_ZOOM;
     mapPanX = 0;
     mapPanY = 0;
   }
@@ -406,9 +462,16 @@ const clampMapPan = () => {
   mapPanY = clamp(mapPanY, -maxY, maxY);
 };
 
+const markerScaleForZoom = () => {
+  const zoomProgress = clamp((mapZoom - MIN_MAP_ZOOM) / (MAX_MAP_ZOOM - MIN_MAP_ZOOM), 0, 1);
+  const targetScreenScale = 1 - (1 - MIN_MARKER_SCREEN_SCALE) * zoomProgress;
+  return targetScreenScale / mapZoom;
+};
+
 const applyMapTransform = () => {
   if (!mapStage) return;
   clampMapPan();
+  mapStage.style.setProperty("--marker-zoom-scale", `${markerScaleForZoom()}`);
   mapStage.style.transform = `translate(${mapPanX}px, ${mapPanY}px) scale(${mapZoom})`;
 };
 
@@ -419,7 +482,7 @@ const setMapZoom = (nextZoom, anchorClientX, anchorClientY) => {
   const centerY = rect.top + rect.height / 2;
   const anchorX = (anchorClientX ?? centerX) - centerX;
   const anchorY = (anchorClientY ?? centerY) - centerY;
-  const clampedZoom = clamp(nextZoom, 1, 6);
+  const clampedZoom = clamp(nextZoom, MIN_MAP_ZOOM, MAX_MAP_ZOOM);
   if (Math.abs(clampedZoom - mapZoom) < 0.001) return;
 
   const worldX = (anchorX - mapPanX) / mapZoom;
@@ -434,7 +497,7 @@ const initFlatMap = () => {
   if (isMapReady || !mapViewport || !mapStage || !mapMarkers) return;
 
   const onPointerDown = (event) => {
-    if (event.button !== 0) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     if (event.target.closest(".map-city-marker")) return;
     mapDragging = true;
     mapDidPan = false;
@@ -496,6 +559,21 @@ const initFlatMap = () => {
     updateFlatMapMarkers(latestJobs);
   });
 
+  mapZoomInBtn?.addEventListener("click", () => {
+    setMapZoom(mapZoom + 0.36);
+  });
+
+  mapZoomOutBtn?.addEventListener("click", () => {
+    setMapZoom(mapZoom - 0.36);
+  });
+
+  mapResetViewBtn?.addEventListener("click", () => {
+    mapZoom = DEFAULT_MAP_ZOOM;
+    mapPanX = 0;
+    mapPanY = 0;
+    applyMapTransform();
+  });
+
   isMapReady = true;
   if (updateMapStageLayout()) {
     applyMapTransform();
@@ -509,9 +587,26 @@ const clearFlatMapMarkers = () => {
 
 const latLonToMapPercent = (latitude, longitude) => {
   if (Number.isNaN(latitude) || Number.isNaN(longitude)) return null;
-  const x = ((longitude + 180) / 360) * 100;
-  const y = ((90 - latitude) / 180) * 100;
-  return { x: clamp(x, 0, 100), y: clamp(y, 0, 100) };
+  const lat = clamp(latitude, -90, 90);
+  const lon = ((((longitude + 180) % 360) + 360) % 360) - 180;
+
+  const absLat = Math.abs(lat);
+  const maxIndex = ROBINSON_X.length - 1;
+  const band = Math.min(Math.floor(absLat / ROBINSON_LAT_STEP), maxIndex - 1);
+  const bandStart = band * ROBINSON_LAT_STEP;
+  const t = (absLat - bandStart) / ROBINSON_LAT_STEP;
+  const xCoef = ROBINSON_X[band] + (ROBINSON_X[band + 1] - ROBINSON_X[band]) * t;
+  const yCoef = ROBINSON_Y[band] + (ROBINSON_Y[band + 1] - ROBINSON_Y[band]) * t;
+
+  const lambda = (lon * Math.PI) / 180;
+  const xRobinson = ROBINSON_FXC * lambda * xCoef;
+  const yRobinson = ROBINSON_FYC * yCoef * (lat < 0 ? -1 : 1);
+
+  const xPercent =
+    ((xRobinson + ROBINSON_X_MAX) / (2 * ROBINSON_X_MAX)) * 100 + MAP_X_ALIGNMENT_SHIFT_PERCENT;
+  const yPercent =
+    ((ROBINSON_Y_MAX - yRobinson) / (2 * ROBINSON_Y_MAX)) * 100 + MAP_Y_ALIGNMENT_SHIFT_PERCENT;
+  return { x: clamp(xPercent, 0, 100), y: clamp(yPercent, 0, 100) };
 };
 
 const updateFlatMapMarkers = (jobs = []) => {
