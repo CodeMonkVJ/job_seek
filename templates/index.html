@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260215c" />
   </head>
   <body>
     <main class="page">
@@ -78,62 +78,98 @@
             <p class="muted">Track roles, resumes, and outreach in one place.</p>
           </div>
           <div class="dash-actions">
+            <span id="city-filter-label" class="city-filter-label hidden"></span>
+            <button id="clear-city-filter" class="ghost hidden" type="button">All cities</button>
             <button id="mobile-add-toggle" class="ghost mobile-add-btn" type="button" aria-expanded="false">
               Add job
+            </button>
+            <button id="mobile-map-toggle" class="ghost mobile-map-btn" type="button" aria-expanded="false">
+              Map
             </button>
             <button id="logout-btn" class="ghost">Logout</button>
           </div>
         </div>
 
         <div class="dash-grid">
-          <div class="panel" id="add-job-panel">
-            <h3>Add a job</h3>
-            <form id="job-form">
-              <label>
-                Job title
-                <input type="text" name="title" placeholder="e.g., Frontend Engineer" />
-              </label>
-              <label>
-                Job link
-                <input type="url" name="link" required placeholder="https://..." />
-              </label>
-              <label>
-                Overleaf project link
-                <input type="url" name="overleaf_link" placeholder="https://www.overleaf.com/project/..." />
-              </label>
-              <label>
-                Status
-                <select name="status">
-                  <option>INTERESTED</option>
-                  <option>APPLIED</option>
-                  <option>ONGOING</option>
-                  <option>ACCEPTED</option>
-                  <option>REJECTED</option>
-                </select>
-              </label>
-              <label>
-                Years of experience
-                <input type="text" name="yoe" placeholder="2-4" />
-              </label>
-              <label>
-                Location
-                <input type="text" name="location" placeholder="Remote / NYC" />
-              </label>
-              <label>
-                <div class="field-head">
-                  <span>Key points</span>
-                  <button type="button" id="generate-keypoints-btn" class="ghost field-action hidden">
-                    Generate tags with ChatGPT
-                  </button>
+          <div class="panel left-switch-panel" id="add-job-panel">
+            <div class="left-switch-tabs" role="tablist" aria-label="Left panel switcher">
+              <button type="button" id="left-tab-add" class="left-switch-tab active" role="tab" aria-selected="true">
+                Add job
+              </button>
+              <button type="button" id="left-tab-map" class="left-switch-tab" role="tab" aria-selected="false">
+                Map
+              </button>
+            </div>
+
+            <div id="left-view-add" class="left-switch-view active" role="tabpanel">
+              <form id="job-form">
+                <label>
+                  Job title
+                  <input type="text" name="title" placeholder="e.g., Frontend Engineer" />
+                </label>
+                <label>
+                  Job link
+                  <input type="url" name="link" required placeholder="https://..." />
+                </label>
+                <label>
+                  Overleaf project link
+                  <input type="url" name="overleaf_link" placeholder="https://www.overleaf.com/project/..." />
+                </label>
+                <label>
+                  Status
+                  <select name="status">
+                    <option>INTERESTED</option>
+                    <option>APPLIED</option>
+                    <option>ONGOING</option>
+                    <option>ACCEPTED</option>
+                    <option>REJECTED</option>
+                  </select>
+                </label>
+                <label>
+                  Years of experience
+                  <input type="text" name="yoe" placeholder="2-4" />
+                </label>
+                <label>
+                  City
+                  <input
+                    type="text"
+                    name="city"
+                    id="job-city-input"
+                    list="city-options"
+                    placeholder="Search stored city"
+                    autocomplete="off"
+                  />
+                  <datalist id="city-options"></datalist>
+                </label>
+                <label>
+                  <div class="field-head">
+                    <span>Key points</span>
+                    <button type="button" id="generate-keypoints-btn" class="ghost field-action hidden">
+                      Generate tags with ChatGPT
+                    </button>
+                  </div>
+                  <textarea name="keypoints" rows="4" placeholder="Highlights from the JD"></textarea>
+                </label>
+                <div id="job-keypoints-tags" class="tag-area">
+                  <p class="muted">No key points yet.</p>
                 </div>
-                <textarea name="keypoints" rows="4" placeholder="Highlights from the JD"></textarea>
-              </label>
-              <div id="job-keypoints-tags" class="tag-area">
-                <p class="muted">No key points yet.</p>
+                <button type="submit">Add job</button>
+                <p class="form-msg" id="job-msg"></p>
+              </form>
+            </div>
+
+            <div id="left-view-map" class="left-switch-view" role="tabpanel">
+              <div class="map-panel-head">
+                <h3>Global job map</h3>
+                <p class="muted" id="map-summary">No city markers yet.</p>
               </div>
-              <button type="submit">Add job</button>
-              <p class="form-msg" id="job-msg"></p>
-            </form>
+              <div id="flat-map-viewport" class="flat-map" role="img" aria-label="World map with job city markers">
+                <div id="flat-map-stage" class="flat-map-stage">
+                  <img class="flat-map-base" src="/static/world.svg" alt="World map" draggable="false" />
+                  <div id="flat-map-markers" class="flat-map-markers" aria-hidden="false"></div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="panel jobs" id="jobs"></div>
@@ -141,6 +177,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260215s"></script>
   </body>
 </html>

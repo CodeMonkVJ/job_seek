@@ -206,9 +206,34 @@ button.ghost:hover {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
-.mobile-add-btn {
+.mobile-add-btn,
+.mobile-map-btn {
+  display: none;
+}
+
+.mobile-add-btn.active,
+.mobile-map-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.city-filter-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--accent-dark);
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.city-filter-label.hidden {
   display: none;
 }
 
@@ -228,6 +253,143 @@ button.ghost:hover {
   padding: 20px;
   border: 1px solid var(--border);
   box-shadow: 0 12px 25px rgba(20, 20, 20, 0.08);
+}
+
+.left-switch-tabs {
+  display: inline-flex;
+  width: 100%;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.left-switch-tab {
+  flex: 1 1 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
+.left-switch-tab.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.left-switch-view {
+  display: none;
+}
+
+.left-switch-view.active {
+  display: block;
+}
+
+.map-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.map-panel-head h3 {
+  margin: 0;
+}
+
+.flat-map {
+  width: 100%;
+  height: 360px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background: #dbeafe;
+  position: relative;
+  touch-action: none;
+}
+
+.flat-map-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: center center;
+  cursor: grab;
+  user-select: none;
+}
+
+.flat-map-stage.dragging {
+  cursor: grabbing;
+}
+
+.flat-map-base {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.flat-map-markers {
+  position: absolute;
+  inset: 0;
+}
+
+.map-city-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  width: var(--marker-size, 12px);
+  height: var(--marker-size, 12px);
+  border: 0;
+  border-radius: 999px;
+  background: #ff4d6d;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 6px 16px rgba(20, 20, 20, 0.25);
+  cursor: pointer;
+  padding: 0;
+}
+
+.map-city-marker.multi {
+  background: #f97316;
+}
+
+.map-city-marker.active {
+  background: #22c55e;
+}
+
+.map-city-marker:hover {
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.map-city-marker:focus-visible {
+  outline: 2px solid #111827;
+  outline-offset: 2px;
+}
+
+.map-city-marker::after {
+  content: attr(data-count);
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(17, 24, 39, 0.9);
+  color: #fff;
+  font-size: 0.68rem;
+  line-height: 16px;
+  font-family: var(--mono);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.map-city-marker:hover::after,
+.map-city-marker.active::after {
+  opacity: 1;
 }
 
 .jobs {
@@ -571,11 +733,20 @@ button.ghost:hover {
   .dash-grid {
     grid-template-columns: 1fr;
   }
+
+  .flat-map {
+    height: 320px;
+  }
 }
 
 @media (max-width: 700px) {
-  .mobile-add-btn {
+  .mobile-add-btn,
+  .mobile-map-btn {
     display: inline-flex;
+  }
+
+  .left-switch-tabs {
+    display: none;
   }
 
   #add-job-panel {

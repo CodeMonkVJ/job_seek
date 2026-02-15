@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import urllib.parse
 import urllib.request
@@ -7,6 +8,7 @@ import re
 import sqlite3
 import json
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from flask import Flask, jsonify, request, session, send_from_directory
@@ -17,6 +19,7 @@ DATA_DIR = BASE_DIR / "data"
 USERS_DIR = DATA_DIR / "users"
 GLOBAL_DB = DATA_DIR / "users.db"
 TEXLIVE_CACHE_DIR = DATA_DIR / "texlive" / "pdftex"
+WORLD_CITIES_CSV = BASE_DIR / "worldcities.csv"
 
 ALLOWED_STATUSES = {"APPLIED", "INTERESTED", "ONGOING", "ACCEPTED", "REJECTED"}
 ALLOWED_CONNECTION_STATUSES = {"REFERRED", "MESSAGED", "PENDING"}
@@ -146,6 +149,161 @@ def ensure_user_db_schema(db_path: Path) -> None:
         _ensure_jobs_column(conn, "keypoint_statuses", "TEXT")
         _ensure_connections_column(conn, "status", "TEXT")
         _ensure_connections_column(conn, "name", "TEXT")
+
+
+def _build_city_label(city_ascii: str, admin_name: str, country: str) -> str:
+    parts = [city_ascii]
+    if admin_name and admin_name.casefold() != city_ascii.casefold():
+        parts.append(admin_name)
+    if country:
+        parts.append(country)
+    return ", ".join(parts)
+
+
+def _city_skeleton(value: str) -> str:
+    letters = [ch for ch in value.casefold() if "a" <= ch <= "z"]
+    return "".join(ch for ch in letters if ch not in {"a", "e", "i", "o", "u"})
+
+
+@lru_cache(maxsize=1)
+def _load_world_cities() -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+    if not WORLD_CITIES_CSV.exists():
+        raise FileNotFoundError(f"Missing city dataset: {WORLD_CITIES_CSV}")
+
+    raw_cities: list[dict] = []
+    with WORLD_CITIES_CSV.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            city_ascii = (row.get("city_ascii") or row.get("city") or "").strip()
+            city_native = (row.get("city") or "").strip()
+            country = (row.get("country") or "").strip()
+            admin_name = (row.get("admin_name") or "").strip()
+            if not city_ascii:
+                continue
+            try:
+                latitude = float(row.get("lat") or "")
+                longitude = float(row.get("lng") or "")
+            except ValueError:
+                continue
+            population_raw = (row.get("population") or "").strip()
+            try:
+                population = int(float(population_raw)) if population_raw else 0
+            except ValueError:
+                population = 0
+            city_id = (row.get("id") or "").strip()
+
+            raw_cities.append(
+                {
+                    "name": _build_city_label(city_ascii, admin_name, country),
+                    "city_ascii": city_ascii,
+                    "city_native": city_native,
+                    "country": country,
+                    "admin_name": admin_name,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "population": population,
+                    "city_id": city_id,
+                }
+            )
+
+    label_counts: dict[str, int] = {}
+    for city in raw_cities:
+        label = city["name"]
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    for city in raw_cities:
+        label = city["name"]
+        if label_counts.get(label, 0) > 1 and city["city_id"]:
+            city["name"] = f"{label} [{city['city_id']}]"
+        city["name_lower"] = city["name"].casefold()
+
+    raw_cities.sort(key=lambda item: (-item["population"], item["name"]))
+    city_map = {item["name_lower"]: item for item in raw_cities}
+    alias_map: dict[str, dict] = {}
+    for city in raw_cities:
+        skeleton_city_ascii = _city_skeleton(city["city_ascii"])
+        skeleton_city_native = _city_skeleton(city["city_native"])
+        skeleton_country = _city_skeleton(city["country"])
+        aliases = {
+            city["city_ascii"].casefold(),
+            city["city_native"].casefold(),
+            f"{city['city_ascii']}, {city['country']}".casefold() if city["country"] else "",
+            f"{city['city_native']}, {city['country']}".casefold() if city["country"] else "",
+            (
+                f"{city['city_ascii']}, {city['admin_name']}, {city['country']}".casefold()
+                if city["admin_name"] and city["country"]
+                else ""
+            ),
+            (
+                f"sk::{skeleton_city_ascii},{skeleton_country}"
+                if len(skeleton_city_ascii) >= 4 and skeleton_country
+                else ""
+            ),
+            (
+                f"sk::{skeleton_city_native},{skeleton_country}"
+                if len(skeleton_city_native) >= 4 and skeleton_country
+                else ""
+            ),
+            f"sk::{skeleton_city_ascii}" if len(skeleton_city_ascii) >= 4 else "",
+            f"sk::{skeleton_city_native}" if len(skeleton_city_native) >= 4 else "",
+        }
+        for alias in aliases:
+            if not alias:
+                continue
+            if alias not in alias_map:
+                alias_map[alias] = city
+
+    return raw_cities, city_map, alias_map
+
+
+def _find_city(city_name: str) -> dict | None:
+    if not city_name:
+        return None
+    _, city_map, alias_map = _load_world_cities()
+    normalized = city_name.strip().casefold()
+    direct = city_map.get(normalized) or alias_map.get(normalized)
+    if direct:
+        return direct
+
+    parts = [part.strip() for part in city_name.split(",") if part.strip()]
+    city_part = parts[0] if parts else city_name.strip()
+    country_part = parts[-1] if len(parts) > 1 else ""
+    city_skeleton = _city_skeleton(city_part)
+    country_skeleton = _city_skeleton(country_part)
+
+    if len(city_skeleton) >= 4 and country_skeleton:
+        by_country = alias_map.get(f"sk::{city_skeleton},{country_skeleton}")
+        if by_country:
+            return by_country
+    if len(city_skeleton) >= 4:
+        return alias_map.get(f"sk::{city_skeleton}")
+    return None
+
+
+def _search_cities(query: str, limit: int) -> list[dict]:
+    cities, _, _ = _load_world_cities()
+    if not query:
+        matches = cities[:limit]
+    else:
+        q = query.casefold()
+        starts_with: list[dict] = []
+        contains: list[dict] = []
+        for city in cities:
+            name_lower = city["name_lower"]
+            if name_lower.startswith(q):
+                starts_with.append(city)
+            elif q in name_lower:
+                contains.append(city)
+        matches = (starts_with + contains)[:limit]
+
+    return [
+        {
+            "name": city["name"],
+            "latitude": city["latitude"],
+            "longitude": city["longitude"],
+        }
+        for city in matches
+    ]
 
 
 def _derive_connection_name(url: str) -> str | None:
@@ -285,6 +443,26 @@ def me():
     return jsonify({"authenticated": True, "username": session.get("username")})
 
 
+@app.route("/api/cities", methods=["GET"])
+def cities():
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    query = (request.args.get("q") or "").strip()
+    limit_raw = request.args.get("limit") or "80"
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return jsonify({"error": "invalid_limit"}), 400
+    limit = max(1, min(limit, 200))
+
+    try:
+        return jsonify({"cities": _search_cities(query, limit)})
+    except FileNotFoundError:
+        return jsonify({"error": "cities_dataset_missing"}), 500
+
+
 @app.route("/api/jobs", methods=["GET", "POST"])
 def jobs():
     auth_error = _require_auth()
@@ -295,7 +473,6 @@ def jobs():
     if not db_path:
         return jsonify({"error": "no_db"}), 500
     ensure_user_db_schema(db_path)
-    ensure_user_db_schema(db_path)
 
     if request.method == "POST":
         payload = request.get_json(silent=True) or {}
@@ -303,7 +480,7 @@ def jobs():
         link = (payload.get("link") or "").strip()
         status = (payload.get("status") or "INTERESTED").strip().upper()
         yoe = (payload.get("yoe") or "").strip()
-        location = (payload.get("location") or "").strip()
+        city_name = (payload.get("city") or payload.get("location") or "").strip()
         keypoints = (payload.get("keypoints") or "").strip()
         raw_keypoint_statuses = payload.get("keypoint_statuses")
         overleaf_link = (payload.get("overleaf_link") or "").strip()
@@ -321,6 +498,15 @@ def jobs():
         )
         keypoint_statuses_json = json.dumps(keypoint_statuses) if keypoint_statuses else None
 
+        city = None
+        if city_name:
+            try:
+                city = _find_city(city_name)
+            except FileNotFoundError:
+                return jsonify({"error": "cities_dataset_missing"}), 500
+            if not city:
+                return jsonify({"error": "city_not_found"}), 400
+
         with _connect(db_path) as conn:
             conn.execute(
                 """
@@ -332,7 +518,7 @@ def jobs():
                     link,
                     status,
                     yoe or None,
-                    location or None,
+                    city["name"] if city else None,
                     keypoints or None,
                     keypoint_statuses_json,
                     None,
@@ -348,6 +534,12 @@ def jobs():
         ).fetchall()
         jobs_list = []
         for row in rows:
+            city = None
+            if row["location"]:
+                try:
+                    city = _find_city(row["location"])
+                except FileNotFoundError:
+                    return jsonify({"error": "cities_dataset_missing"}), 500
             connections = conn.execute(
                 "SELECT id, url, name, status, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
                 (row["id"],),
@@ -360,6 +552,9 @@ def jobs():
                     "status": row["status"],
                     "yoe": row["yoe"],
                     "location": row["location"],
+                    "city": row["location"],
+                    "city_latitude": city["latitude"] if city else None,
+                    "city_longitude": city["longitude"] if city else None,
                     "keypoints": row["keypoints"],
                     "keypoint_statuses": _deserialize_keypoint_statuses(row["keypoint_statuses"]),
                     "resume_tex": row["resume_tex"],
@@ -407,9 +602,22 @@ def update_job(job_id: int):
             return jsonify({"error": "invalid_status"}), 400
         fields["status"] = status
 
-    for key in ("title", "link", "yoe", "location", "keypoints", "overleaf_link"):
+    for key in ("title", "link", "yoe", "keypoints", "overleaf_link"):
         if key in payload:
             fields[key] = (payload.get(key) or "").strip() or None
+
+    if "city" in payload or "location" in payload:
+        city_name = (payload.get("city") or payload.get("location") or "").strip()
+        if city_name:
+            try:
+                city = _find_city(city_name)
+            except FileNotFoundError:
+                return jsonify({"error": "cities_dataset_missing"}), 500
+            if not city:
+                return jsonify({"error": "city_not_found"}), 400
+            fields["location"] = city["name"]
+        else:
+            fields["location"] = None
 
     if "keypoint_statuses" in payload:
         raw_keypoint_statuses = payload.get("keypoint_statuses")

@@ -8,6 +8,7 @@ const registerForm = document.getElementById("register-form");
 const jobForm = document.getElementById("job-form");
 const logoutBtn = document.getElementById("logout-btn");
 const mobileAddToggleBtn = document.getElementById("mobile-add-toggle");
+const mobileMapToggleBtn = document.getElementById("mobile-map-toggle");
 const addJobPanel = document.getElementById("add-job-panel");
 const authPanel = document.getElementById("auth-panel");
 const hero = document.getElementById("hero");
@@ -16,8 +17,39 @@ const jobLinkInput = document.querySelector("#job-form input[name=\"link\"]");
 const jobKeypointsInput = document.querySelector("#job-form textarea[name=\"keypoints\"]");
 const jobKeypointsTags = document.getElementById("job-keypoints-tags");
 const generateKeypointsBtn = document.getElementById("generate-keypoints-btn");
+const cityInput = document.getElementById("job-city-input");
+const cityOptions = document.getElementById("city-options");
+const mapViewport = document.getElementById("flat-map-viewport");
+const mapStage = document.getElementById("flat-map-stage");
+const mapMarkers = document.getElementById("flat-map-markers");
+const mapSummary = document.getElementById("map-summary");
+const leftTabAddBtn = document.getElementById("left-tab-add");
+const leftTabMapBtn = document.getElementById("left-tab-map");
+const leftViewAdd = document.getElementById("left-view-add");
+const leftViewMap = document.getElementById("left-view-map");
+const cityFilterLabel = document.getElementById("city-filter-label");
+const clearCityFilterBtn = document.getElementById("clear-city-filter");
 const mobileAddMediaQuery = window.matchMedia("(max-width: 700px)");
-let isMobileAddPanelOpen = false;
+let isMobilePanelOpen = false;
+const cityLookup = new Map();
+let citySearchDebounce = null;
+let isMapReady = false;
+let mapZoom = 1;
+let mapPanX = 0;
+let mapPanY = 0;
+let mapDragging = false;
+let mapDidPan = false;
+let mapLastX = 0;
+let mapLastY = 0;
+let mapStageWidth = 1;
+let mapStageHeight = 1;
+let mapStageLeft = 0;
+let mapStageTop = 0;
+let latestJobs = [];
+let selectedCityKey = "";
+let selectedCityLabel = "";
+let activeLeftView = "add";
+const MAP_ASPECT_RATIO = 2000 / 857;
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, {
@@ -64,17 +96,93 @@ const updateGenerateTagsBtn = () => {
   generateKeypointsBtn.classList.toggle("hidden", !hasJobLink);
 };
 
-const syncMobileAddPanel = () => {
-  if (!mobileAddToggleBtn || !addJobPanel) return;
+const syncMobilePanel = () => {
+  if (!addJobPanel) return;
   if (mobileAddMediaQuery.matches) {
-    addJobPanel.classList.toggle("mobile-open", isMobileAddPanelOpen);
-    mobileAddToggleBtn.textContent = isMobileAddPanelOpen ? "Close add form" : "Add job";
-    mobileAddToggleBtn.setAttribute("aria-expanded", String(isMobileAddPanelOpen));
+    addJobPanel.classList.toggle("mobile-open", isMobilePanelOpen);
+    const showingAdd = isMobilePanelOpen && activeLeftView === "add";
+    const showingMap = isMobilePanelOpen && activeLeftView === "map";
+    if (mobileAddToggleBtn) {
+      mobileAddToggleBtn.textContent = showingAdd ? "Close add form" : "Add job";
+      mobileAddToggleBtn.setAttribute("aria-expanded", String(showingAdd));
+      mobileAddToggleBtn.classList.toggle("active", showingAdd);
+    }
+    if (mobileMapToggleBtn) {
+      mobileMapToggleBtn.textContent = showingMap ? "Close map" : "Map";
+      mobileMapToggleBtn.setAttribute("aria-expanded", String(showingMap));
+      mobileMapToggleBtn.classList.toggle("active", showingMap);
+    }
+    if (showingMap) {
+      window.requestAnimationFrame(() => {
+        if (updateMapStageLayout()) {
+          applyMapTransform();
+        }
+      });
+    }
     return;
   }
+  isMobilePanelOpen = false;
   addJobPanel.classList.remove("mobile-open");
-  mobileAddToggleBtn.textContent = "Add job";
-  mobileAddToggleBtn.setAttribute("aria-expanded", "false");
+  if (mobileAddToggleBtn) {
+    mobileAddToggleBtn.textContent = "Add job";
+    mobileAddToggleBtn.setAttribute("aria-expanded", "false");
+    mobileAddToggleBtn.classList.remove("active");
+  }
+  if (mobileMapToggleBtn) {
+    mobileMapToggleBtn.textContent = "Map";
+    mobileMapToggleBtn.setAttribute("aria-expanded", "false");
+    mobileMapToggleBtn.classList.remove("active");
+  }
+};
+
+const setLeftView = (view) => {
+  activeLeftView = view === "map" ? "map" : "add";
+  const isMap = activeLeftView === "map";
+  leftTabAddBtn?.classList.toggle("active", !isMap);
+  leftTabMapBtn?.classList.toggle("active", isMap);
+  leftTabAddBtn?.setAttribute("aria-selected", String(!isMap));
+  leftTabMapBtn?.setAttribute("aria-selected", String(isMap));
+  leftViewAdd?.classList.toggle("active", !isMap);
+  leftViewMap?.classList.toggle("active", isMap);
+
+  if (isMap) {
+    if (mapSummary) {
+      mapSummary.textContent = "Loading map...";
+    }
+    initFlatMap();
+    if (updateMapStageLayout()) {
+      applyMapTransform();
+      updateFlatMapMarkers(latestJobs);
+    } else {
+      window.requestAnimationFrame(() => {
+        if (updateMapStageLayout()) {
+          applyMapTransform();
+          updateFlatMapMarkers(latestJobs);
+        }
+      });
+    }
+  }
+  syncMobilePanel();
+};
+
+const toggleMobilePanelView = (view) => {
+  if (!mobileAddMediaQuery.matches) {
+    setLeftView(view);
+    return;
+  }
+  if (isMobilePanelOpen && activeLeftView === view) {
+    isMobilePanelOpen = false;
+    syncMobilePanel();
+    return;
+  }
+  if (view === "map") {
+    mapZoom = 1;
+    mapPanX = 0;
+    mapPanY = 0;
+  }
+  isMobilePanelOpen = true;
+  syncMobilePanel();
+  setLeftView(view);
 };
 
 const toTags = (text = "") =>
@@ -84,6 +192,7 @@ const toTags = (text = "") =>
     .filter(Boolean);
 
 const normalizeTagKey = (tag = "") => tag.trim().toLowerCase();
+const normalizeCityKey = (city = "") => city.trim().toLowerCase();
 
 const buildKeypointStatusMap = (items = []) => {
   const map = new Map();
@@ -215,6 +324,244 @@ const formatUrl = (url = "") => {
   }
 };
 
+const renderCityOptions = (cities = []) => {
+  if (!cityOptions) return;
+  cityLookup.clear();
+  cityOptions.innerHTML = cities
+    .map((city) => {
+      const name = (city.name || "").trim();
+      if (!name) return "";
+      const latitude = Number(city.latitude);
+      const longitude = Number(city.longitude);
+      cityLookup.set(normalizeCityKey(name), { name, latitude, longitude });
+      return `<option value="${escapeHtml(name)}"></option>`;
+    })
+    .join("");
+};
+
+const loadCities = async (query = "") => {
+  const params = new URLSearchParams();
+  if (query?.trim()) {
+    params.set("q", query.trim());
+  }
+  params.set("limit", "80");
+  const queryString = params.toString();
+  const { cities } = await api(`/api/cities${queryString ? `?${queryString}` : ""}`);
+  renderCityOptions(Array.isArray(cities) ? cities : []);
+};
+
+const getVisibleJobs = () => {
+  if (!selectedCityKey) return latestJobs;
+  return latestJobs.filter((job) => normalizeCityKey(job.city || job.location || "") === selectedCityKey);
+};
+
+const updateCityFilterUi = () => {
+  if (!cityFilterLabel) return;
+  if (!selectedCityKey) {
+    cityFilterLabel.textContent = "";
+    cityFilterLabel.classList.add("hidden");
+    clearCityFilterBtn?.classList.add("hidden");
+    return;
+  }
+  const cityJobs = getVisibleJobs();
+  const label = selectedCityLabel || cityJobs[0]?.city || cityJobs[0]?.location || "Selected city";
+  cityFilterLabel.textContent = `${label}: ${cityJobs.length} job${cityJobs.length === 1 ? "" : "s"}`;
+  cityFilterLabel.classList.remove("hidden");
+  clearCityFilterBtn?.classList.remove("hidden");
+};
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+const updateMapStageLayout = () => {
+  if (!mapViewport || !mapStage) return false;
+  const viewportWidth = mapViewport.clientWidth || 1;
+  const viewportHeight = mapViewport.clientHeight || 1;
+  if (viewportWidth <= 2 || viewportHeight <= 2) {
+    return false;
+  }
+  const viewportRatio = viewportWidth / viewportHeight;
+  if (viewportRatio >= MAP_ASPECT_RATIO) {
+    mapStageHeight = viewportHeight;
+    mapStageWidth = mapStageHeight * MAP_ASPECT_RATIO;
+  } else {
+    mapStageWidth = viewportWidth;
+    mapStageHeight = mapStageWidth / MAP_ASPECT_RATIO;
+  }
+  mapStageLeft = (viewportWidth - mapStageWidth) / 2;
+  mapStageTop = (viewportHeight - mapStageHeight) / 2;
+  mapStage.style.width = `${mapStageWidth}px`;
+  mapStage.style.height = `${mapStageHeight}px`;
+  mapStage.style.left = `${mapStageLeft}px`;
+  mapStage.style.top = `${mapStageTop}px`;
+  return true;
+};
+
+const clampMapPan = () => {
+  if (!mapViewport) return;
+  const width = mapViewport.clientWidth || 1;
+  const height = mapViewport.clientHeight || 1;
+  const maxX = Math.max(0, (mapStageWidth * mapZoom - width) / 2);
+  const maxY = Math.max(0, (mapStageHeight * mapZoom - height) / 2);
+  mapPanX = clamp(mapPanX, -maxX, maxX);
+  mapPanY = clamp(mapPanY, -maxY, maxY);
+};
+
+const applyMapTransform = () => {
+  if (!mapStage) return;
+  clampMapPan();
+  mapStage.style.transform = `translate(${mapPanX}px, ${mapPanY}px) scale(${mapZoom})`;
+};
+
+const setMapZoom = (nextZoom, anchorClientX, anchorClientY) => {
+  if (!mapViewport) return;
+  const rect = mapViewport.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const anchorX = (anchorClientX ?? centerX) - centerX;
+  const anchorY = (anchorClientY ?? centerY) - centerY;
+  const clampedZoom = clamp(nextZoom, 1, 6);
+  if (Math.abs(clampedZoom - mapZoom) < 0.001) return;
+
+  const worldX = (anchorX - mapPanX) / mapZoom;
+  const worldY = (anchorY - mapPanY) / mapZoom;
+  mapZoom = clampedZoom;
+  mapPanX = anchorX - worldX * mapZoom;
+  mapPanY = anchorY - worldY * mapZoom;
+  applyMapTransform();
+};
+
+const initFlatMap = () => {
+  if (isMapReady || !mapViewport || !mapStage || !mapMarkers) return;
+
+  const onPointerDown = (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest(".map-city-marker")) return;
+    mapDragging = true;
+    mapDidPan = false;
+    mapLastX = event.clientX;
+    mapLastY = event.clientY;
+    mapStage.classList.add("dragging");
+    mapViewport.setPointerCapture?.(event.pointerId);
+  };
+
+  const onPointerMove = (event) => {
+    if (!mapDragging) return;
+    const dx = event.clientX - mapLastX;
+    const dy = event.clientY - mapLastY;
+    if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+      mapDidPan = true;
+    }
+    mapPanX += dx;
+    mapPanY += dy;
+    mapLastX = event.clientX;
+    mapLastY = event.clientY;
+    applyMapTransform();
+  };
+
+  const stopDrag = (event) => {
+    if (!mapDragging) return;
+    mapDragging = false;
+    mapStage.classList.remove("dragging");
+    mapViewport.releasePointerCapture?.(event.pointerId);
+    window.setTimeout(() => {
+      mapDidPan = false;
+    }, 0);
+  };
+
+  const onWheel = (event) => {
+    event.preventDefault();
+    const delta = event.deltaY < 0 ? 0.24 : -0.24;
+    setMapZoom(mapZoom + delta, event.clientX, event.clientY);
+  };
+
+  mapViewport.addEventListener("pointerdown", onPointerDown);
+  mapViewport.addEventListener("pointermove", onPointerMove);
+  mapViewport.addEventListener("pointerup", stopDrag);
+  mapViewport.addEventListener("pointercancel", stopDrag);
+  mapViewport.addEventListener("wheel", onWheel, { passive: false });
+  window.addEventListener("resize", () => {
+    if (updateMapStageLayout()) {
+      applyMapTransform();
+    }
+  });
+
+  mapMarkers.addEventListener("click", (event) => {
+    if (mapDidPan) return;
+    const marker = event.target.closest(".map-city-marker");
+    if (!marker?.dataset?.cityKey) return;
+    selectedCityKey = marker.dataset.cityKey;
+    selectedCityLabel = marker.dataset.cityLabel || "";
+    updateCityFilterUi();
+    renderJobs(getVisibleJobs());
+    updateFlatMapMarkers(latestJobs);
+  });
+
+  isMapReady = true;
+  if (updateMapStageLayout()) {
+    applyMapTransform();
+  }
+};
+
+const clearFlatMapMarkers = () => {
+  if (!mapMarkers) return;
+  mapMarkers.innerHTML = "";
+};
+
+const latLonToMapPercent = (latitude, longitude) => {
+  if (Number.isNaN(latitude) || Number.isNaN(longitude)) return null;
+  const x = ((longitude + 180) / 360) * 100;
+  const y = ((90 - latitude) / 180) * 100;
+  return { x: clamp(x, 0, 100), y: clamp(y, 0, 100) };
+};
+
+const updateFlatMapMarkers = (jobs = []) => {
+  if (!mapViewport || !mapMarkers) return;
+  initFlatMap();
+
+  clearFlatMapMarkers();
+  const grouped = new Map();
+  (jobs || []).forEach((job) => {
+    const city = (job.city || job.location || "").trim();
+    const latitude = Number(job.city_latitude);
+    const longitude = Number(job.city_longitude);
+    if (!city || Number.isNaN(latitude) || Number.isNaN(longitude)) return;
+    const key = normalizeCityKey(city);
+    const prev = grouped.get(key);
+    if (prev) {
+      prev.count += 1;
+      return;
+    }
+    grouped.set(key, { city, latitude, longitude, count: 1 });
+  });
+
+  grouped.forEach(({ city, latitude, longitude, count }, key) => {
+    const position = latLonToMapPercent(latitude, longitude);
+    if (!position) return;
+
+    const marker = document.createElement("button");
+    marker.type = "button";
+    marker.className = "map-city-marker";
+    if (count > 1) marker.classList.add("multi");
+    if (key === selectedCityKey) marker.classList.add("active");
+    marker.style.left = `${position.x}%`;
+    marker.style.top = `${position.y}%`;
+    marker.style.setProperty("--marker-size", `${Math.min(22, 10 + count * 2)}px`);
+    marker.dataset.cityKey = key;
+    marker.dataset.cityLabel = city;
+    marker.dataset.count = String(count);
+    marker.setAttribute("aria-label", `${city}: ${count} job${count === 1 ? "" : "s"}`);
+    marker.title = `${city}: ${count} job${count === 1 ? "" : "s"}`;
+    mapMarkers.appendChild(marker);
+  });
+
+  if (!mapSummary) return;
+  const total = grouped.size;
+  const markerJobs = [...grouped.values()].reduce((sum, item) => sum + item.count, 0);
+  mapSummary.textContent = total
+    ? `${markerJobs} job${markerJobs === 1 ? "" : "s"} across ${total} cit${total === 1 ? "y" : "ies"}`
+    : "No city markers yet.";
+};
+
 const renderJobs = (jobs = []) => {
   if (!jobsContainer) return;
   if (!jobs.length) {
@@ -277,7 +624,7 @@ const renderJobs = (jobs = []) => {
               <div class="job-meta">
                 <span>Status: ${job.status}</span>
                 ${job.yoe ? `<span>YoE: ${job.yoe}</span>` : ""}
-                ${job.location ? `<span>Location: ${job.location}</span>` : ""}
+                ${job.location ? `<span>City: ${job.location}</span>` : ""}
               </div>
             </div>
           </div>
@@ -356,7 +703,25 @@ const loadJobs = async () => {
     });
   }
   const { jobs } = await api("/api/jobs");
-  renderJobs(jobs);
+  latestJobs = Array.isArray(jobs) ? jobs : [];
+  if (selectedCityKey) {
+    const stillExists = latestJobs.some(
+      (job) => normalizeCityKey(job.city || job.location || "") === selectedCityKey
+    );
+    if (!stillExists) {
+      selectedCityKey = "";
+      selectedCityLabel = "";
+    } else if (!selectedCityLabel) {
+      selectedCityLabel =
+        latestJobs.find((job) => normalizeCityKey(job.city || job.location || "") === selectedCityKey)
+          ?.city || "";
+    }
+  }
+  updateCityFilterUi();
+  renderJobs(getVisibleJobs());
+  if (activeLeftView === "map") {
+    updateFlatMapMarkers(latestJobs);
+  }
 };
 
 const handleAuth = async (type, form) => {
@@ -374,6 +739,7 @@ const handleAuth = async (type, form) => {
       dashboard.classList.remove("hidden");
       authPanel?.classList.add("hidden");
       hero?.classList.add("hidden");
+      await loadCities();
       await loadJobs();
     }
   } catch (err) {
@@ -388,6 +754,7 @@ const init = async () => {
       dashboard.classList.remove("hidden");
       authPanel?.classList.add("hidden");
       hero?.classList.add("hidden");
+      await loadCities();
       await loadJobs();
     }
   } catch (err) {
@@ -409,7 +776,20 @@ jobForm?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const formData = new FormData(jobForm);
   const payload = Object.fromEntries(formData.entries());
+  const city = (payload.city || "").trim();
   setMsg(jobMsg, "");
+
+  if (city) {
+    if (!cityLookup.has(normalizeCityKey(city))) {
+      await loadCities(city);
+    }
+    const matchedCity = cityLookup.get(normalizeCityKey(city));
+    if (!matchedCity) {
+      setMsg(jobMsg, "city not found in fixed city list");
+      return;
+    }
+    payload.city = matchedCity.name;
+  }
 
   try {
     await api("/api/jobs", {
@@ -420,9 +800,12 @@ jobForm?.addEventListener("submit", async (event) => {
     if (jobKeypointsTags) {
       jobKeypointsTags.innerHTML = renderTags([]);
     }
+    if (cityInput) {
+      cityInput.value = "";
+    }
     if (mobileAddMediaQuery.matches) {
-      isMobileAddPanelOpen = false;
-      syncMobileAddPanel();
+      isMobilePanelOpen = false;
+      syncMobilePanel();
     }
     updateGenerateTagsBtn();
     await loadJobs();
@@ -447,12 +830,61 @@ generateKeypointsBtn?.addEventListener("click", () => {
   window.open(url, "_blank", "noopener,noreferrer");
 });
 
-mobileAddToggleBtn?.addEventListener("click", () => {
-  isMobileAddPanelOpen = !isMobileAddPanelOpen;
-  syncMobileAddPanel();
+const queueCitySearch = (value = "") => {
+  if (citySearchDebounce) {
+    window.clearTimeout(citySearchDebounce);
+  }
+  citySearchDebounce = window.setTimeout(() => {
+    loadCities(value).catch((err) => {
+      setMsg(jobMsg, err.message.replace(/_/g, " "));
+    });
+  }, 120);
+};
+
+cityInput?.addEventListener("focus", () => {
+  queueCitySearch(cityInput.value);
 });
 
-mobileAddMediaQuery.addEventListener("change", syncMobileAddPanel);
+cityInput?.addEventListener("input", () => {
+  queueCitySearch(cityInput.value);
+});
+
+cityInput?.addEventListener("change", () => {
+  const city = cityInput.value.trim();
+  if (!city) return;
+  const found = cityLookup.get(normalizeCityKey(city));
+  if (found) {
+    cityInput.value = found.name;
+  }
+});
+
+leftTabAddBtn?.addEventListener("click", () => {
+  setLeftView("add");
+});
+
+leftTabMapBtn?.addEventListener("click", () => {
+  setLeftView("map");
+});
+
+clearCityFilterBtn?.addEventListener("click", () => {
+  selectedCityKey = "";
+  selectedCityLabel = "";
+  updateCityFilterUi();
+  renderJobs(getVisibleJobs());
+  if (activeLeftView === "map") {
+    updateFlatMapMarkers(latestJobs);
+  }
+});
+
+mobileAddToggleBtn?.addEventListener("click", () => {
+  toggleMobilePanelView("add");
+});
+
+mobileMapToggleBtn?.addEventListener("click", () => {
+  toggleMobilePanelView("map");
+});
+
+mobileAddMediaQuery.addEventListener("change", syncMobilePanel);
 
 jobsContainer?.addEventListener("click", async (event) => {
   const card = event.target.closest(".job-card");
@@ -610,11 +1042,33 @@ logoutBtn?.addEventListener("click", async () => {
   dashboard.classList.add("hidden");
   authPanel?.classList.remove("hidden");
   hero?.classList.remove("hidden");
-  isMobileAddPanelOpen = false;
-  syncMobileAddPanel();
+  if (citySearchDebounce) {
+    window.clearTimeout(citySearchDebounce);
+    citySearchDebounce = null;
+  }
+  cityLookup.clear();
+  if (cityOptions) cityOptions.innerHTML = "";
+  latestJobs = [];
+  selectedCityKey = "";
+  selectedCityLabel = "";
+  updateCityFilterUi();
+  renderJobs([]);
+  if (isMapReady) {
+    updateFlatMapMarkers([]);
+  }
+  isMobilePanelOpen = false;
+  syncMobilePanel();
   setMsg(authMsg, "Logged out.");
 });
 
-init();
-updateGenerateTagsBtn();
-syncMobileAddPanel();
+let hasBootstrapped = false;
+const bootstrapApp = () => {
+  if (hasBootstrapped) return;
+  hasBootstrapped = true;
+  setLeftView("add");
+  init();
+  updateGenerateTagsBtn();
+  syncMobilePanel();
+};
+
+bootstrapApp();
