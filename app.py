@@ -1,0 +1,735 @@
+from __future__ import annotations
+
+import csv
+import os
+import urllib.parse
+import urllib.request
+import re
+import sqlite3
+import json
+from datetime import datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
+
+from flask import Flask, jsonify, request, session, send_from_directory
+from werkzeug.security import generate_password_hash, check_password_hash
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+USERS_DIR = DATA_DIR / "users"
+GLOBAL_DB = DATA_DIR / "users.db"
+TEXLIVE_CACHE_DIR = DATA_DIR / "texlive" / "pdftex"
+WORLD_CITIES_CSV = BASE_DIR / "worldcities.csv"
+
+ALLOWED_STATUSES = {"APPLIED", "INTERESTED", "ONGOING", "ACCEPTED", "REJECTED"}
+ALLOWED_CONNECTION_STATUSES = {"REFERRED", "MESSAGED", "PENDING"}
+ALLOWED_KEYPOINT_STATUSES = {"DONE", "PENDING"}
+TEXLIVE_BASE = "https://texlive.swiftlatex.com/pdftex/"
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("JOB_SEEK_SECRET", "dev-secret-change-me")
+try:
+    session_days = int(os.environ.get("JOB_SEEK_SESSION_DAYS", "30"))
+except ValueError:
+    session_days = 30
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=max(1, session_days))
+app.config["SESSION_REFRESH_EACH_REQUEST"] = True
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = (
+    os.environ.get("JOB_SEEK_COOKIE_SECURE", "0").strip().lower() in {"1", "true", "yes", "on"}
+)
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_global_db() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    USERS_DIR.mkdir(parents=True, exist_ok=True)
+    with _connect(GLOBAL_DB) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                db_path TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+
+
+def init_user_db(db_path: Path) -> None:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                link TEXT NOT NULL,
+                status TEXT NOT NULL,
+                yoe TEXT,
+                location TEXT,
+                keypoints TEXT,
+                resume_tex TEXT,
+                overleaf_link TEXT,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS connections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                url TEXT NOT NULL,
+                name TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+            );
+            """
+        )
+        _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_jobs_column(conn, "overleaf_link", "TEXT")
+        _ensure_jobs_column(conn, "keypoint_statuses", "TEXT")
+        _ensure_connections_column(conn, "status", "TEXT")
+        _ensure_connections_column(conn, "name", "TEXT")
+
+
+def _ensure_jobs_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    existing = conn.execute("PRAGMA table_info(jobs)").fetchall()
+    columns = {row["name"] for row in existing}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {column_type}")
+
+
+def _ensure_connections_column(conn: sqlite3.Connection, column: str, column_type: str) -> None:
+    existing = conn.execute("PRAGMA table_info(connections)").fetchall()
+    columns = {row["name"] for row in existing}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE connections ADD COLUMN {column} {column_type}")
+
+
+def _normalize_keypoint_statuses(raw_statuses: list[dict]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_statuses:
+        if not isinstance(item, dict):
+            continue
+        tag = (item.get("tag") or "").strip()
+        if not tag:
+            continue
+        status = (item.get("status") or "PENDING").strip().upper()
+        if status not in ALLOWED_KEYPOINT_STATUSES:
+            status = "PENDING"
+        dedupe_key = tag.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append({"tag": tag, "status": status})
+    return normalized
+
+
+def _deserialize_keypoint_statuses(raw_value: str | None) -> list[dict[str, str]]:
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return _normalize_keypoint_statuses(parsed)
+
+
+def ensure_user_db_schema(db_path: Path) -> None:
+    if not db_path.exists():
+        init_user_db(db_path)
+        return
+    with _connect(db_path) as conn:
+        _ensure_jobs_column(conn, "title", "TEXT")
+        _ensure_jobs_column(conn, "overleaf_link", "TEXT")
+        _ensure_jobs_column(conn, "keypoint_statuses", "TEXT")
+        _ensure_connections_column(conn, "status", "TEXT")
+        _ensure_connections_column(conn, "name", "TEXT")
+
+
+def _build_city_label(city_ascii: str, admin_name: str, country: str) -> str:
+    parts = [city_ascii]
+    if admin_name and admin_name.casefold() != city_ascii.casefold():
+        parts.append(admin_name)
+    if country:
+        parts.append(country)
+    return ", ".join(parts)
+
+
+def _city_skeleton(value: str) -> str:
+    letters = [ch for ch in value.casefold() if "a" <= ch <= "z"]
+    return "".join(ch for ch in letters if ch not in {"a", "e", "i", "o", "u"})
+
+
+@lru_cache(maxsize=1)
+def _load_world_cities() -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+    if not WORLD_CITIES_CSV.exists():
+        raise FileNotFoundError(f"Missing city dataset: {WORLD_CITIES_CSV}")
+
+    raw_cities: list[dict] = []
+    with WORLD_CITIES_CSV.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            city_ascii = (row.get("city_ascii") or row.get("city") or "").strip()
+            city_native = (row.get("city") or "").strip()
+            country = (row.get("country") or "").strip()
+            admin_name = (row.get("admin_name") or "").strip()
+            if not city_ascii:
+                continue
+            try:
+                latitude = float(row.get("lat") or "")
+                longitude = float(row.get("lng") or "")
+            except ValueError:
+                continue
+            population_raw = (row.get("population") or "").strip()
+            try:
+                population = int(float(population_raw)) if population_raw else 0
+            except ValueError:
+                population = 0
+            city_id = (row.get("id") or "").strip()
+
+            raw_cities.append(
+                {
+                    "name": _build_city_label(city_ascii, admin_name, country),
+                    "city_ascii": city_ascii,
+                    "city_native": city_native,
+                    "country": country,
+                    "admin_name": admin_name,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "population": population,
+                    "city_id": city_id,
+                }
+            )
+
+    label_counts: dict[str, int] = {}
+    for city in raw_cities:
+        label = city["name"]
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    for city in raw_cities:
+        label = city["name"]
+        if label_counts.get(label, 0) > 1 and city["city_id"]:
+            city["name"] = f"{label} [{city['city_id']}]"
+        city["name_lower"] = city["name"].casefold()
+
+    raw_cities.sort(key=lambda item: (-item["population"], item["name"]))
+    city_map = {item["name_lower"]: item for item in raw_cities}
+    alias_map: dict[str, dict] = {}
+    for city in raw_cities:
+        skeleton_city_ascii = _city_skeleton(city["city_ascii"])
+        skeleton_city_native = _city_skeleton(city["city_native"])
+        skeleton_country = _city_skeleton(city["country"])
+        aliases = {
+            city["city_ascii"].casefold(),
+            city["city_native"].casefold(),
+            f"{city['city_ascii']}, {city['country']}".casefold() if city["country"] else "",
+            f"{city['city_native']}, {city['country']}".casefold() if city["country"] else "",
+            (
+                f"{city['city_ascii']}, {city['admin_name']}, {city['country']}".casefold()
+                if city["admin_name"] and city["country"]
+                else ""
+            ),
+            (
+                f"sk::{skeleton_city_ascii},{skeleton_country}"
+                if len(skeleton_city_ascii) >= 4 and skeleton_country
+                else ""
+            ),
+            (
+                f"sk::{skeleton_city_native},{skeleton_country}"
+                if len(skeleton_city_native) >= 4 and skeleton_country
+                else ""
+            ),
+            f"sk::{skeleton_city_ascii}" if len(skeleton_city_ascii) >= 4 else "",
+            f"sk::{skeleton_city_native}" if len(skeleton_city_native) >= 4 else "",
+        }
+        for alias in aliases:
+            if not alias:
+                continue
+            if alias not in alias_map:
+                alias_map[alias] = city
+
+    return raw_cities, city_map, alias_map
+
+
+def _find_city(city_name: str) -> dict | None:
+    if not city_name:
+        return None
+    _, city_map, alias_map = _load_world_cities()
+    normalized = city_name.strip().casefold()
+    direct = city_map.get(normalized) or alias_map.get(normalized)
+    if direct:
+        return direct
+
+    parts = [part.strip() for part in city_name.split(",") if part.strip()]
+    city_part = parts[0] if parts else city_name.strip()
+    country_part = parts[-1] if len(parts) > 1 else ""
+    city_skeleton = _city_skeleton(city_part)
+    country_skeleton = _city_skeleton(country_part)
+
+    if len(city_skeleton) >= 4 and country_skeleton:
+        by_country = alias_map.get(f"sk::{city_skeleton},{country_skeleton}")
+        if by_country:
+            return by_country
+    if len(city_skeleton) >= 4:
+        return alias_map.get(f"sk::{city_skeleton}")
+    return None
+
+
+def _search_cities(query: str, limit: int) -> list[dict]:
+    cities, _, _ = _load_world_cities()
+    if not query:
+        matches = cities[:limit]
+    else:
+        q = query.casefold()
+        starts_with: list[dict] = []
+        contains: list[dict] = []
+        for city in cities:
+            name_lower = city["name_lower"]
+            if name_lower.startswith(q):
+                starts_with.append(city)
+            elif q in name_lower:
+                contains.append(city)
+        matches = (starts_with + contains)[:limit]
+
+    return [
+        {
+            "name": city["name"],
+            "latitude": city["latitude"],
+            "longitude": city["longitude"],
+        }
+        for city in matches
+    ]
+
+
+def _derive_connection_name(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None
+
+    path = parsed.path or ""
+    segments = [seg for seg in path.split("/") if seg]
+    if not segments:
+        return None
+
+    slug = None
+    for marker in ("in", "pub"):
+        if marker in segments:
+            idx = segments.index(marker)
+            if idx + 1 < len(segments):
+                slug = segments[idx + 1]
+                break
+
+    if not slug:
+        slug = segments[-1]
+
+    slug = urllib.parse.unquote(slug).strip()
+    if not slug:
+        return None
+
+    tokens = [t for t in re.split(r"[-_]+", slug) if t and not t.isdigit()]
+    if not tokens:
+        return None
+
+    return " ".join(tokens).title()
+
+
+def _current_user_db() -> Path | None:
+    db_path = session.get("db_path")
+    return Path(db_path) if db_path else None
+
+
+def _require_auth() -> tuple[bool, dict] | None:
+    if "user_id" not in session:
+        return False, {"error": "not_authenticated"}
+    return None
+
+
+@app.route("/")
+def index():
+    return send_from_directory("templates", "index.html")
+
+
+@app.route("/static/<path:filename>")
+def static_files(filename: str):
+    return send_from_directory("static", filename)
+
+
+@app.route("/texlive/pdftex/<path:filename>")
+def texlive_proxy(filename: str):
+    if ".." in filename or filename.startswith("/"):
+        return jsonify({"error": "invalid_filename"}), 400
+    TEXLIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    local_path = TEXLIVE_CACHE_DIR / filename
+    if local_path.exists():
+        return send_from_directory(local_path.parent, local_path.name)
+    url = f"{TEXLIVE_BASE}{filename}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            data = resp.read()
+            content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return app.response_class(data, content_type=content_type)
+    except Exception:
+        return jsonify({"error": "fetch_failed"}), 502
+
+
+@app.route("/api/register", methods=["POST"])
+def register():
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+
+    if not USERNAME_RE.match(username):
+        return jsonify({"error": "invalid_username"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "password_too_short"}), 400
+
+    db_path = USERS_DIR / f"{username}.db"
+    init_user_db(db_path)
+
+    try:
+        with _connect(GLOBAL_DB) as conn:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, db_path, created_at) VALUES (?, ?, ?, ?)",
+                (username, generate_password_hash(password), str(db_path), datetime.utcnow().isoformat()),
+            )
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "username_taken"}), 409
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/login", methods=["POST"])
+def login():
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+
+    with _connect(GLOBAL_DB) as conn:
+        row = conn.execute(
+            "SELECT id, username, password_hash, db_path FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+
+    if not row or not check_password_hash(row["password_hash"], password):
+        return jsonify({"error": "invalid_credentials"}), 401
+
+    session.clear()
+    session.permanent = True
+    session["user_id"] = row["id"]
+    session["username"] = row["username"]
+    session["db_path"] = row["db_path"]
+
+    return jsonify({"ok": True, "username": row["username"]})
+
+
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/me")
+def me():
+    if "user_id" not in session:
+        return jsonify({"authenticated": False})
+    return jsonify({"authenticated": True, "username": session.get("username")})
+
+
+@app.route("/api/cities", methods=["GET"])
+def cities():
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    query = (request.args.get("q") or "").strip()
+    limit_raw = request.args.get("limit") or "80"
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        return jsonify({"error": "invalid_limit"}), 400
+    limit = max(1, min(limit, 200))
+
+    try:
+        return jsonify({"cities": _search_cities(query, limit)})
+    except FileNotFoundError:
+        return jsonify({"error": "cities_dataset_missing"}), 500
+
+
+@app.route("/api/jobs", methods=["GET", "POST"])
+def jobs():
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        title = (payload.get("title") or "").strip()
+        link = (payload.get("link") or "").strip()
+        status = (payload.get("status") or "INTERESTED").strip().upper()
+        yoe = (payload.get("yoe") or "").strip()
+        city_name = (payload.get("city") or payload.get("location") or "").strip()
+        keypoints = (payload.get("keypoints") or "").strip()
+        raw_keypoint_statuses = payload.get("keypoint_statuses")
+        overleaf_link = (payload.get("overleaf_link") or "").strip()
+
+        if not link:
+            return jsonify({"error": "link_required"}), 400
+        if status not in ALLOWED_STATUSES:
+            return jsonify({"error": "invalid_status"}), 400
+        if raw_keypoint_statuses is not None and not isinstance(raw_keypoint_statuses, list):
+            return jsonify({"error": "invalid_keypoint_statuses"}), 400
+        keypoint_statuses = (
+            _normalize_keypoint_statuses(raw_keypoint_statuses)
+            if isinstance(raw_keypoint_statuses, list)
+            else []
+        )
+        keypoint_statuses_json = json.dumps(keypoint_statuses) if keypoint_statuses else None
+
+        city = None
+        if city_name:
+            try:
+                city = _find_city(city_name)
+            except FileNotFoundError:
+                return jsonify({"error": "cities_dataset_missing"}), 500
+            if not city:
+                return jsonify({"error": "city_not_found"}), 400
+
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (title, link, status, yoe, location, keypoints, keypoint_statuses, resume_tex, overleaf_link, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title or None,
+                    link,
+                    status,
+                    yoe or None,
+                    city["name"] if city else None,
+                    keypoints or None,
+                    keypoint_statuses_json,
+                    None,
+                    overleaf_link or None,
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+        return jsonify({"ok": True})
+
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, title, link, status, yoe, location, keypoints, keypoint_statuses, resume_tex, overleaf_link, created_at FROM jobs ORDER BY created_at DESC"
+        ).fetchall()
+        jobs_list = []
+        for row in rows:
+            city = None
+            if row["location"]:
+                try:
+                    city = _find_city(row["location"])
+                except FileNotFoundError:
+                    return jsonify({"error": "cities_dataset_missing"}), 500
+            connections = conn.execute(
+                "SELECT id, url, name, status, created_at FROM connections WHERE job_id = ? ORDER BY created_at DESC",
+                (row["id"],),
+            ).fetchall()
+            jobs_list.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "link": row["link"],
+                    "status": row["status"],
+                    "yoe": row["yoe"],
+                    "location": row["location"],
+                    "city": row["location"],
+                    "city_latitude": city["latitude"] if city else None,
+                    "city_longitude": city["longitude"] if city else None,
+                    "keypoints": row["keypoints"],
+                    "keypoint_statuses": _deserialize_keypoint_statuses(row["keypoint_statuses"]),
+                    "resume_tex": row["resume_tex"],
+                    "overleaf_link": row["overleaf_link"],
+                    "created_at": row["created_at"],
+                    "connections": [
+                        {
+                            "id": c["id"],
+                            "url": c["url"],
+                            "name": c["name"] or _derive_connection_name(c["url"]),
+                            "status": c["status"] or "PENDING",
+                            "created_at": c["created_at"],
+                        }
+                        for c in connections
+                    ],
+                }
+            )
+
+    return jsonify({"jobs": jobs_list})
+
+
+@app.route("/api/jobs/<int:job_id>", methods=["PATCH", "DELETE"])
+def update_job(job_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    if request.method == "DELETE":
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM connections WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return jsonify({"ok": True})
+
+    payload = request.get_json(silent=True) or {}
+    fields = {}
+
+    if "status" in payload:
+        status = (payload.get("status") or "").strip().upper()
+        if status not in ALLOWED_STATUSES:
+            return jsonify({"error": "invalid_status"}), 400
+        fields["status"] = status
+
+    for key in ("title", "link", "yoe", "keypoints", "overleaf_link"):
+        if key in payload:
+            fields[key] = (payload.get(key) or "").strip() or None
+
+    if "city" in payload or "location" in payload:
+        city_name = (payload.get("city") or payload.get("location") or "").strip()
+        if city_name:
+            try:
+                city = _find_city(city_name)
+            except FileNotFoundError:
+                return jsonify({"error": "cities_dataset_missing"}), 500
+            if not city:
+                return jsonify({"error": "city_not_found"}), 400
+            fields["location"] = city["name"]
+        else:
+            fields["location"] = None
+
+    if "keypoint_statuses" in payload:
+        raw_keypoint_statuses = payload.get("keypoint_statuses")
+        if raw_keypoint_statuses is not None and not isinstance(raw_keypoint_statuses, list):
+            return jsonify({"error": "invalid_keypoint_statuses"}), 400
+        keypoint_statuses = (
+            _normalize_keypoint_statuses(raw_keypoint_statuses)
+            if isinstance(raw_keypoint_statuses, list)
+            else []
+        )
+        fields["keypoint_statuses"] = json.dumps(keypoint_statuses) if keypoint_statuses else None
+
+    if not fields:
+        return jsonify({"error": "no_fields"}), 400
+
+    set_clause = ", ".join(f"{k} = ?" for k in fields.keys())
+    values = list(fields.values()) + [job_id]
+
+    with _connect(db_path) as conn:
+        conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", values)
+
+    return jsonify({"ok": True})
+
+
+
+
+@app.route("/api/jobs/<int:job_id>/connections", methods=["POST"])
+def add_connection(job_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "url_required"}), 400
+
+    status = (payload.get("status") or "PENDING").strip().upper()
+    if status not in ALLOWED_CONNECTION_STATUSES:
+        return jsonify({"error": "invalid_connection_status"}), 400
+
+    name = _derive_connection_name(url)
+
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO connections (job_id, url, name, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (job_id, url, name, status, datetime.utcnow().isoformat()),
+        )
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/connections/<int:connection_id>", methods=["PATCH"])
+def update_connection(connection_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    payload = request.get_json(silent=True) or {}
+    status = (payload.get("status") or "").strip().upper()
+    if status not in ALLOWED_CONNECTION_STATUSES:
+        return jsonify({"error": "invalid_connection_status"}), 400
+
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE connections SET status = ? WHERE id = ?",
+            (status, connection_id),
+        )
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/connections/<int:connection_id>", methods=["DELETE"])
+def delete_connection(connection_id: int):
+    auth_error = _require_auth()
+    if auth_error:
+        return jsonify(auth_error[1]), 401
+
+    db_path = _current_user_db()
+    if not db_path:
+        return jsonify({"error": "no_db"}), 500
+    ensure_user_db_schema(db_path)
+
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM connections WHERE id = ?", (connection_id,))
+
+    return jsonify({"ok": True})
+
+
+init_global_db()
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
